@@ -54,18 +54,20 @@ printf "  Version  : ${YELLOW}${VERSION}${NC}\n"
 printf "  Platform : ${OS} ${ARCH}\n\n"
 mkdir -p "$INSTALL_DIR"
 
-# Download with dot animation
+# Download with cycling dot animation
 curl -fsSL "$URL" -o "${INSTALL_DIR}/${BIN}" &
 CURL_PID=$!
-printf "  Downloading"
 while kill -0 $CURL_PID 2>/dev/null; do
-  printf "."
-  sleep 0.3
+  printf "\r  Downloading .  " ; sleep 0.3
+  kill -0 $CURL_PID 2>/dev/null || break
+  printf "\r  Downloading .. " ; sleep 0.3
+  kill -0 $CURL_PID 2>/dev/null || break
+  printf "\r  Downloading ..." ; sleep 0.3
 done
 wait $CURL_PID
 chmod +x "${INSTALL_DIR}/${BIN}"
 
-printf " ${GREEN}done${NC}\n\n"
+printf "\r  Downloading ... ${GREEN}done${NC}\n\n"
 printf "  ${GREEN}Contexa ${VERSION} installed!${NC}\n\n"
 printf "  Get started:\n"
 printf "    cd your-spring-project\n"
