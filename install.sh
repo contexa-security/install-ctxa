@@ -52,13 +52,20 @@ URL="https://github.com/${REPO}/releases/download/${VERSION}/${FILE}"
 
 printf "  Version  : ${YELLOW}${VERSION}${NC}\n"
 printf "  Platform : ${OS} ${ARCH}\n\n"
-printf "  Downloading... "
-
 mkdir -p "$INSTALL_DIR"
-curl -fsSL "$URL" -o "${INSTALL_DIR}/${BIN}"
+
+# Download with dot animation
+curl -fsSL "$URL" -o "${INSTALL_DIR}/${BIN}" &
+CURL_PID=$!
+printf "  Downloading"
+while kill -0 $CURL_PID 2>/dev/null; do
+  printf "."
+  sleep 0.3
+done
+wait $CURL_PID
 chmod +x "${INSTALL_DIR}/${BIN}"
 
-printf "${GREEN}done${NC}\n\n"
+printf " ${GREEN}done${NC}\n\n"
 printf "  ${GREEN}Contexa ${VERSION} installed!${NC}\n\n"
 printf "  Get started:\n"
 printf "    cd your-spring-project\n"
