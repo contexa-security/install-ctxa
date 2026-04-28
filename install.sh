@@ -55,6 +55,7 @@ case "$OS" in
 esac
 
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${FILE}"
+SHA_URL="${URL}.sha256"
 
 # Info box
 printf "  ${TL}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${TR}\n"
@@ -66,8 +67,12 @@ printf "\n"
 
 mkdir -p "$INSTALL_DIR"
 
+# Download to a temporary path; verify SHA-256 before promoting it.
+TMP_BIN=$(mktemp 2>/dev/null || mktemp -t contexa)
+trap 'rm -f "$TMP_BIN" "$TMP_BIN.sha256"' EXIT
+
 # Download with cycling dot animation
-curl -fsSL "$URL" -o "${INSTALL_DIR}/${BIN}" &
+curl -fsSL "$URL" -o "$TMP_BIN" &
 CURL_PID=$!
 while kill -0 $CURL_PID 2>/dev/null; do
   printf "\r  ${DIM}Downloading .  ${NC}" ; sleep 0.3
@@ -77,9 +82,47 @@ while kill -0 $CURL_PID 2>/dev/null; do
   printf "\r  ${DIM}Downloading ...${NC}" ; sleep 0.3
 done
 wait $CURL_PID
-chmod +x "${INSTALL_DIR}/${BIN}"
 
-printf "\r  ${GREEN}Downloaded successfully.${NC}            \n\n"
+printf "\r  ${GREEN}Downloaded successfully.${NC}            \n"
+
+# Verify SHA-256 checksum. Releases must publish a "<file>.sha256" sibling
+# containing the hex digest (optionally followed by the filename).
+# Failure aborts installation; binary is never marked executable or moved.
+printf "  ${DIM}Verifying checksum...${NC}\n"
+if ! curl -fsSL "$SHA_URL" -o "$TMP_BIN.sha256"; then
+  printf "  ${RED}Error: checksum file not found at $SHA_URL${NC}\n"
+  printf "  ${RED}Refusing to install an unverified binary.${NC}\n"
+  exit 1
+fi
+
+EXPECTED_SHA=$(awk '{print $1}' "$TMP_BIN.sha256")
+if [ -z "$EXPECTED_SHA" ]; then
+  printf "  ${RED}Error: empty checksum file.${NC}\n"
+  exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL_SHA=$(sha256sum "$TMP_BIN" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL_SHA=$(shasum -a 256 "$TMP_BIN" | awk '{print $1}')
+else
+  printf "  ${RED}Error: neither sha256sum nor shasum found - cannot verify download.${NC}\n"
+  exit 1
+fi
+
+if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+  printf "  ${RED}Error: checksum mismatch.${NC}\n"
+  printf "  ${RED}  expected: $EXPECTED_SHA${NC}\n"
+  printf "  ${RED}  actual  : $ACTUAL_SHA${NC}\n"
+  printf "  ${RED}Refusing to install a tampered binary.${NC}\n"
+  exit 1
+fi
+
+printf "  ${GREEN}Checksum verified.${NC}\n\n"
+
+# Promote the verified binary to its final location.
+mv "$TMP_BIN" "${INSTALL_DIR}/${BIN}"
+chmod +x "${INSTALL_DIR}/${BIN}"
 
 # Success box
 printf "  ${TL}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${H}${TR}\n"
