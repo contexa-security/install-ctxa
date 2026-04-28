@@ -1,5 +1,8 @@
 #!/bin/sh
+# pipefail makes a pipeline fail when any stage fails (not just the last one),
+# so a failed curl or grep upstream of `sed` is no longer silently swallowed.
 set -e
+(set -o pipefail) 2>/dev/null && set -o pipefail || true
 
 REPO="contexa-security/contexa-cli"
 INSTALL_DIR="/usr/local/bin"

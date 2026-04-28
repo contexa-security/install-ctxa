@@ -20,7 +20,21 @@ $ErrorActionPreference = 'Stop'
 
 $Repo       = 'contexa-security/contexa-cli'
 $BinaryName = 'contexa-win-x64.exe'
-$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\Contexa'
+
+# Resolve a base directory for installation. LOCALAPPDATA is the standard
+# location, but service accounts and minimal CI environments may have it
+# unset; fall back to USERPROFILE\AppData\Local before giving up.
+$LocalAppData = $env:LOCALAPPDATA
+if ([string]::IsNullOrWhiteSpace($LocalAppData) -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+    $LocalAppData = Join-Path $env:USERPROFILE 'AppData\Local'
+}
+if ([string]::IsNullOrWhiteSpace($LocalAppData)) {
+    Write-Host '  Error: cannot resolve a writable installation directory.' -ForegroundColor Red
+    Write-Host '         Both LOCALAPPDATA and USERPROFILE are empty.'      -ForegroundColor Red
+    exit 1
+}
+
+$InstallDir = Join-Path $LocalAppData 'Programs\Contexa'
 $FinalPath  = Join-Path $InstallDir 'contexa.exe'
 
 # Banner
@@ -99,8 +113,19 @@ try {
 
     Write-Host '  Checksum verified.' -ForegroundColor Green
 
-    # Promote the verified binary to its final location.
-    Move-Item -Force -Path $tempBin -Destination $FinalPath
+    # Promote the verified binary to its final location. Windows holds a hard
+    # lock on running .exe files, so a self-upgrade while contexa is open
+    # cannot succeed - report it explicitly instead of bubbling a confusing
+    # IOException.
+    try {
+        Move-Item -Force -Path $tempBin -Destination $FinalPath
+    } catch [System.IO.IOException] {
+        Write-Host ''
+        Write-Host "  Error: could not write $FinalPath" -ForegroundColor Red
+        Write-Host '         The existing contexa.exe is in use by another process.' -ForegroundColor Red
+        Write-Host '         Close any running contexa session and re-run this installer.' -ForegroundColor Red
+        exit 1
+    }
 } finally {
     # Always clean up temp artifacts, even on failure.
     if (Test-Path $tempBin) { Remove-Item -Force $tempBin -ErrorAction SilentlyContinue }
@@ -108,11 +133,15 @@ try {
 }
 
 # Add InstallDir to the user PATH if not already present (User scope, no admin needed).
+# Both sides are normalized (trailing backslash stripped) so that
+# "C:\...\Contexa" and "C:\...\Contexa\" don't get treated as two entries
+# and accumulate on every reinstall.
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ([string]::IsNullOrEmpty($userPath)) { $userPath = '' }
 
+$normalizedTarget = $InstallDir.TrimEnd('\')
 $pathEntries = $userPath.Split(';') | Where-Object { $_ -ne '' }
-$alreadyOnPath = $pathEntries -contains $InstallDir
+$alreadyOnPath = @($pathEntries | ForEach-Object { $_.TrimEnd('\') }) -contains $normalizedTarget
 
 if (-not $alreadyOnPath) {
     $newPath = if ($userPath.EndsWith(';') -or $userPath -eq '') { "$userPath$InstallDir" } else { "$userPath;$InstallDir" }

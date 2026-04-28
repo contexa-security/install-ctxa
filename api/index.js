@@ -19,7 +19,20 @@ module.exports = (req, res) => {
     || ua.includes('windowspowershell');
 
   const fileName = wantsPs1 ? 'install.ps1' : 'install.sh';
-  const body = fs.readFileSync(path.join(__dirname, '..', fileName), 'utf8');
+  const filePath = path.join(__dirname, '..', fileName);
+
+  // Fail soft when the script file is missing (deploy without expected asset).
+  // Returning a plain 503 prevents Vercel from leaking a Node stack trace.
+  let body;
+  try {
+    body = fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    res.statusCode = 503;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(`# Contexa installer is temporarily unavailable.\n# Please try again in a few minutes or visit https://docs.ctxa.ai for manual setup.\n`);
+    return;
+  }
 
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
