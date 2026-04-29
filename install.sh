@@ -47,7 +47,14 @@ case "$OS" in
     esac ;;
   Darwin*)
     case "$ARCH" in
-      x86_64) FILE="contexa-macos-x64"; PLATFORM="macOS x64" ;;
+      x86_64)
+        # No prebuilt Intel Mac binary is published yet. Refuse early instead of
+        # attempting a download that returns 404 (release matrix ships ARM64 only).
+        printf "  ${RED}Intel Mac is not yet supported as a prebuilt binary.${NC}\n"
+        printf "  ${YELLOW}Build from source instead:${NC}\n"
+        printf "    git clone https://github.com/${REPO}\n"
+        printf "    cd contexa-cli && npm install && node src/index.js init\n"
+        exit 1 ;;
       arm64)  FILE="contexa-macos-arm64"; PLATFORM="macOS ARM64 (Apple Silicon)" ;;
       *) printf "  ${RED}Unsupported: $ARCH${NC}\n"; exit 1 ;;
     esac ;;
