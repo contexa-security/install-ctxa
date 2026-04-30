@@ -18,6 +18,21 @@ $ErrorActionPreference = 'Stop'
 # Force TLS 1.2 - PowerShell 5.x defaults to TLS 1.0 which GitHub rejects.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# Suppress PowerShell's built-in Invoke-WebRequest progress UI. On localized
+# Windows it renders as "요청 스트림을 쓰는 중...(쓴 바이트 수: 17933446)"
+# which is illegible (raw bytes, no total, no percentage). We replace it with
+# a short, human-readable size line printed by Format-Bytes below.
+$script:OriginalProgressPreference = $ProgressPreference
+$ProgressPreference = 'SilentlyContinue'
+
+function Format-Bytes {
+    param([long]$Bytes)
+    if ($Bytes -lt 1KB) { return "$Bytes B" }
+    if ($Bytes -lt 1MB) { return ('{0:N1} KB' -f ($Bytes / 1KB)) }
+    if ($Bytes -lt 1GB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
+    return ('{0:N2} GB' -f ($Bytes / 1GB))
+}
+
 $Repo       = 'contexa-security/contexa-cli'
 $BinaryName = 'contexa-win-x64.exe'
 
@@ -37,13 +52,26 @@ if ([string]::IsNullOrWhiteSpace($LocalAppData)) {
 $InstallDir = Join-Path $LocalAppData 'Programs\Contexa'
 $FinalPath  = Join-Path $InstallDir 'contexa.exe'
 
-# Banner
+# Banner. The box-drawing characters below render as a clean CONTEXA logo
+# in modern Windows Terminal / PowerShell, but conhost defaults to the
+# system codepage (cp949 on Korean Windows) which mangles them. Force the
+# console output encoding to UTF-8 just for this script so the banner reads
+# the same on every machine.
+try {
+    $script:OriginalConsoleOutputEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {
+    # If we cannot change the encoding (rare; some constrained hosts), fall
+    # through. Banner will still print but may render box chars as '?'.
+}
+
 Write-Host ''
-Write-Host '  ##::::::::: ##::::::: ###:: ## ######## ######## ##::: ##  ###### ' -ForegroundColor Cyan
-Write-Host '  ##:::::::: ##:::::::  ####: ##    ##    ##::::::  ## ##::: ##:::: ' -ForegroundColor Cyan
-Write-Host '  ##:::::::: ##:::::::  ## ##:##    ##    ######::   ###:::: ###### ' -ForegroundColor Cyan
-Write-Host '  ##:::::::: ##:::::::  ##: ####    ##    ##::::::  ## ##::: ::::## ' -ForegroundColor Cyan
-Write-Host '  ######### ########::  ##::: ##    ##    ######## ##::: ## ###### '  -ForegroundColor Cyan
+Write-Host '   ██████╗ ██████╗ ███╗   ██╗████████╗███████╗██╗  ██╗ █████╗ ' -ForegroundColor Cyan
+Write-Host '  ██╔════╝██╔═══██╗████╗  ██║╚══██╔══╝██╔════╝╚██╗██╔╝██╔══██╗' -ForegroundColor Cyan
+Write-Host '  ██║     ██║   ██║██╔██╗ ██║   ██║   █████╗   ╚███╔╝ ███████║' -ForegroundColor Cyan
+Write-Host '  ██║     ██║   ██║██║╚██╗██║   ██║   ██╔══╝   ██╔██╗ ██╔══██║' -ForegroundColor Cyan
+Write-Host '  ╚██████╗╚██████╔╝██║ ╚████║   ██║   ███████╗██╔╝ ██╗██║  ██║' -ForegroundColor Cyan
+Write-Host '   ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝' -ForegroundColor Cyan
 Write-Host '  AI-Native Zero Trust Security Platform   https://ctxa.ai' -ForegroundColor Yellow
 Write-Host ''
 
@@ -81,9 +109,28 @@ $tempBin = [System.IO.Path]::GetTempFileName()
 $tempSha = "$tempBin.sha256"
 
 try {
-    Write-Host '  Downloading...' -ForegroundColor DarkGray -NoNewline
+    # Resolve expected size with a HEAD request so we can show a meaningful
+    # "Downloading 87.3 MB..." line up front - the user otherwise has no
+    # idea whether the download is 1 MB or 1 GB.
+    $expectedSize = $null
+    try {
+        $headResp = Invoke-WebRequest -Uri $downloadUrl -Method Head -UseBasicParsing -ErrorAction Stop
+        if ($headResp.Headers.'Content-Length') {
+            $expectedSize = [long]$headResp.Headers.'Content-Length'
+        }
+    } catch { }
+
+    if ($expectedSize) {
+        Write-Host ("  Downloading {0}..." -f (Format-Bytes $expectedSize)) -ForegroundColor DarkGray
+    } else {
+        Write-Host '  Downloading...' -ForegroundColor DarkGray
+    }
+
     Invoke-WebRequest -Uri $downloadUrl -OutFile $tempBin -UseBasicParsing
-    Write-Host "`r  Downloaded successfully.            " -ForegroundColor Green
+
+    # Report actual downloaded size on completion.
+    $actualSize = (Get-Item $tempBin).Length
+    Write-Host ("  Downloaded {0}." -f (Format-Bytes $actualSize)) -ForegroundColor Green
 
     # Fetch SHA-256 sidecar - failure means the publisher has not yet published a digest,
     # in which case we refuse to install rather than trust an unverified binary.
@@ -150,6 +197,10 @@ if (-not $alreadyOnPath) {
     Write-Host "  Added $InstallDir to user PATH." -ForegroundColor Green
     Write-Host '  Open a new terminal for the change to take effect.' -ForegroundColor DarkGray
 }
+
+# Restore the user's original $ProgressPreference so any subsequent commands
+# in the same session keep their default progress UI.
+$ProgressPreference = $script:OriginalProgressPreference
 
 # Success summary
 Write-Host ''

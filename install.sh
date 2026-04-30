@@ -81,19 +81,40 @@ mkdir -p "$INSTALL_DIR"
 TMP_BIN=$(mktemp 2>/dev/null || mktemp -t contexa)
 trap 'rm -f "$TMP_BIN" "$TMP_BIN.sha256"' EXIT
 
-# Download with cycling dot animation
-curl -fsSL "$URL" -o "$TMP_BIN" &
-CURL_PID=$!
-while kill -0 $CURL_PID 2>/dev/null; do
-  printf "\r  ${DIM}Downloading .  ${NC}" ; sleep 0.3
-  kill -0 $CURL_PID 2>/dev/null || break
-  printf "\r  ${DIM}Downloading .. ${NC}" ; sleep 0.3
-  kill -0 $CURL_PID 2>/dev/null || break
-  printf "\r  ${DIM}Downloading ...${NC}" ; sleep 0.3
-done
-wait $CURL_PID
+# Convert raw bytes into a human-readable size string. Operators want to know
+# whether they are about to wait on a 1 MB or a 100 MB download; the previous
+# "Downloading ..." dot animation hid that completely.
+fmt_bytes() {
+  local b=$1
+  if [ -z "$b" ] || [ "$b" -le 0 ] 2>/dev/null; then echo ""; return; fi
+  if   [ "$b" -lt 1024 ];       then echo "$b B"
+  elif [ "$b" -lt 1048576 ];    then awk "BEGIN { printf \"%.1f KB\", $b/1024 }"
+  elif [ "$b" -lt 1073741824 ]; then awk "BEGIN { printf \"%.1f MB\", $b/1048576 }"
+  else                               awk "BEGIN { printf \"%.2f GB\", $b/1073741824 }"
+  fi
+}
 
-printf "\r  ${GREEN}Downloaded successfully.${NC}            \n"
+# Resolve expected size with a HEAD request so we can show "Downloading 83.6 MB..."
+# up front. Failures here are non-fatal - we just fall back to a size-less line.
+EXPECTED_SIZE=$(curl -fsSLI "$URL" 2>/dev/null \
+  | awk 'BEGIN{IGNORECASE=1} /^content-length:/ { gsub("\r","",$2); print $2; exit }')
+EXPECTED_HUMAN=$(fmt_bytes "$EXPECTED_SIZE")
+
+if [ -n "$EXPECTED_HUMAN" ]; then
+  printf "  ${DIM}Downloading %s...${NC}\n" "$EXPECTED_HUMAN"
+else
+  printf "  ${DIM}Downloading...${NC}\n"
+fi
+
+curl -fsSL "$URL" -o "$TMP_BIN"
+
+ACTUAL_SIZE=$(wc -c <"$TMP_BIN" 2>/dev/null | tr -d ' ')
+ACTUAL_HUMAN=$(fmt_bytes "$ACTUAL_SIZE")
+if [ -n "$ACTUAL_HUMAN" ]; then
+  printf "  ${GREEN}Downloaded %s.${NC}\n" "$ACTUAL_HUMAN"
+else
+  printf "  ${GREEN}Downloaded successfully.${NC}\n"
+fi
 
 # Verify SHA-256 checksum. Releases must publish a "<file>.sha256" sibling
 # containing the hex digest (optionally followed by the filename).
