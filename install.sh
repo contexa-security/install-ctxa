@@ -14,6 +14,10 @@ YELLOW='\033[1;33m'; DIM='\033[2m'; BOLD='\033[1m'; NC='\033[0m'
 # Box drawing characters
 H='─'; V='│'; TL='╭'; TR='╮'; BL='╰'; BR='╯'
 
+# Banner. Linux/macOS terminals default to UTF-8 so the box-drawing glyphs
+# below render cleanly out of the box. The Windows installer (install.ps1)
+# uses the same shape but additionally pins the console output encoding
+# because PowerShell 5.x on Korean Windows defaults to cp949.
 printf "\n"
 printf "${CYAN}${BOLD}"
 printf "  ░█████╗░░█████╗░███╗░░██╗████████╗███████╗██╗░░██╗░█████╗░\n"

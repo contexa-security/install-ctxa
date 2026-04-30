@@ -34,6 +34,16 @@ module.exports = (req, res) => {
     return;
   }
 
+  // Prepend a UTF-8 BOM (﻿) for PowerShell consumers. PowerShell 5.x's
+  // Invoke-RestMethod is known to ignore the Content-Type charset header and
+  // fall back to ISO-8859-1 unless it sees a BOM, which mojibakes the banner
+  // (utf-8 byte 0xE2 → "â", reported by users as "로고가 깨진다"). Bash, on
+  // the other hand, would choke on the BOM as an unknown command at line 1,
+  // so we only inject it for the .ps1 path.
+  if (wantsPs1 && !body.startsWith('﻿')) {
+    body = '﻿' + body;
+  }
+
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
   res.send(body);

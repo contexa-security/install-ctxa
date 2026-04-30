@@ -18,6 +18,17 @@ $ErrorActionPreference = 'Stop'
 # Force TLS 1.2 - PowerShell 5.x defaults to TLS 1.0 which GitHub rejects.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# Pin console output to UTF-8 for the duration of this script so the banner's
+# box-drawing characters (█ ╗ ═ ║ ...) render correctly under PowerShell 5.x
+# on Korean Windows, which otherwise defaults the console to cp949 and turns
+# every utf-8 byte > 0x7F into mojibake (the user reports seeing 'â').
+# We restore the original encoding in the trailing finalizer below.
+$script:OriginalConsoleOutputEncoding = $null
+try {
+    $script:OriginalConsoleOutputEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+} catch { }
+
 # Suppress PowerShell's built-in Invoke-WebRequest progress UI. On localized
 # Windows it renders as "요청 스트림을 쓰는 중...(쓴 바이트 수: 17933446)"
 # which is illegible (raw bytes, no total, no percentage). We replace it with
@@ -52,26 +63,23 @@ if ([string]::IsNullOrWhiteSpace($LocalAppData)) {
 $InstallDir = Join-Path $LocalAppData 'Programs\Contexa'
 $FinalPath  = Join-Path $InstallDir 'contexa.exe'
 
-# Banner. The box-drawing characters below render as a clean CONTEXA logo
-# in modern Windows Terminal / PowerShell, but conhost defaults to the
-# system codepage (cp949 on Korean Windows) which mangles them. Force the
-# console output encoding to UTF-8 just for this script so the banner reads
-# the same on every machine.
-try {
-    $script:OriginalConsoleOutputEncoding = [Console]::OutputEncoding
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-} catch {
-    # If we cannot change the encoding (rare; some constrained hosts), fall
-    # through. Banner will still print but may render box chars as '?'.
-}
-
+# Banner. The box-drawing glyphs render correctly on three layers:
+#   1) Vercel serves install.ps1 with Content-Type charset=utf-8 (vercel.json),
+#      so Invoke-RestMethod decodes the bytes as utf-8 instead of ISO-8859-1.
+#   2) Above we pinned [Console]::OutputEncoding = UTF8 so Write-Host emits
+#      utf-8 bytes the conhost can interpret correctly.
+#   3) Modern Windows Terminal / PowerShell 7 ships with Cascadia Mono which
+#      includes every glyph below. Old conhost raster fonts may still drop
+#      a glyph or two; for that small population we recommend Windows Terminal
+#      in the install guide rather than further degrade the banner here.
 Write-Host ''
-Write-Host '   ██████╗ ██████╗ ███╗   ██╗████████╗███████╗██╗  ██╗ █████╗ ' -ForegroundColor Cyan
-Write-Host '  ██╔════╝██╔═══██╗████╗  ██║╚══██╔══╝██╔════╝╚██╗██╔╝██╔══██╗' -ForegroundColor Cyan
-Write-Host '  ██║     ██║   ██║██╔██╗ ██║   ██║   █████╗   ╚███╔╝ ███████║' -ForegroundColor Cyan
-Write-Host '  ██║     ██║   ██║██║╚██╗██║   ██║   ██╔══╝   ██╔██╗ ██╔══██║' -ForegroundColor Cyan
-Write-Host '  ╚██████╗╚██████╔╝██║ ╚████║   ██║   ███████╗██╔╝ ██╗██║  ██║' -ForegroundColor Cyan
-Write-Host '   ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝' -ForegroundColor Cyan
+Write-Host '  ░█████╗░░█████╗░███╗░░██╗████████╗███████╗██╗░░██╗░█████╗░' -ForegroundColor Cyan
+Write-Host '  ██╔══██╗██╔══██╗████╗░██║╚══██╔══╝██╔════╝╚██╗██╔╝██╔══██╗' -ForegroundColor Cyan
+Write-Host '  ██║░░╚═╝██║░░██║██╔██╗██║░░░██║░░░█████╗░░░╚███╔╝░███████║' -ForegroundColor Cyan
+Write-Host '  ██║░░██╗██║░░██║██║╚████║░░░██║░░░██╔══╝░░░██╔██╗░██╔══██║' -ForegroundColor Cyan
+Write-Host '  ╚█████╔╝╚█████╔╝██║░╚███║░░░██║░░░███████╗██╔╝░██╗██║░░██║' -ForegroundColor Cyan
+Write-Host '  ░╚════╝░░╚════╝░╚═╝░░╚══╝░░░╚═╝░░░╚══════╝╚═╝░░╚═╝╚═╝░░╚═╝' -ForegroundColor Cyan
+Write-Host ''
 Write-Host '  AI-Native Zero Trust Security Platform   https://ctxa.ai' -ForegroundColor Yellow
 Write-Host ''
 
@@ -201,6 +209,13 @@ if (-not $alreadyOnPath) {
 # Restore the user's original $ProgressPreference so any subsequent commands
 # in the same session keep their default progress UI.
 $ProgressPreference = $script:OriginalProgressPreference
+
+# Restore the original console output encoding too. We only flipped it for
+# the banner + status lines above; leaving it pinned to utf-8 could surprise
+# subsequent commands in the same shell session that expect cp949.
+if ($script:OriginalConsoleOutputEncoding) {
+    try { [Console]::OutputEncoding = $script:OriginalConsoleOutputEncoding } catch { }
+}
 
 # Success summary
 Write-Host ''
