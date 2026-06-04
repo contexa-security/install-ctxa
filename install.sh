@@ -30,6 +30,61 @@ printf "${NC}"
 printf "  ${BOLD}AI-Native Zero Trust Security Platform${NC}  ${YELLOW}https://ctxa.ai${NC}\n"
 printf "\n"
 
+# Pre-flight check for installer
+printf "  ${DIM}Running pre-flight environment checks...${NC}\n"
+CHECK_PASS=true
+
+# Check Java 17+
+if command -v java >/dev/null 2>&1; then
+  JAVA_VER=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}' | cut -d. -f1)
+  if [ -z "$JAVA_VER" ]; then
+    JAVA_VER=$(java -version 2>&1 | awk '/version/ {print $3}' | tr -d '"' | cut -d. -f1)
+  fi
+  if [ "${JAVA_VER}" = "1" ]; then
+    JAVA_VER=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}' | cut -d. -f2)
+  fi
+
+  if [ -z "$JAVA_VER" ] || [ "$JAVA_VER" -lt 17 ] 2>/dev/null; then
+    printf "  ${YELLOW}! Java 17+ was not detected (detected: %s)${NC}\n" "${JAVA_VER:-unknown}"
+    CHECK_PASS=false
+  fi
+else
+  printf "  ${YELLOW}! Java is not installed on this machine.${NC}\n"
+  CHECK_PASS=false
+fi
+
+# Check Docker
+if command -v docker >/dev/null 2>&1; then
+  if ! docker info >/dev/null 2>&1; then
+    printf "  ${YELLOW}! Docker daemon is not running.${NC}\n"
+    CHECK_PASS=false
+  fi
+else
+  printf "  ${YELLOW}! Docker CLI is not installed.${NC}\n"
+  CHECK_PASS=false
+fi
+
+if [ "$CHECK_PASS" = false ]; then
+  printf "\n  ${BOLD}Some dependencies are missing.${NC} However, you can still install Contexa CLI\n"
+  printf "  to configure your Spring project using Standalone/Skip mode.\n"
+  printf "  ${CYAN}Would you like to proceed with the CLI installation anyway? (y/n): ${NC}"
+  if [ -t 0 ]; then
+    read -r CONTINUE_INSTALL < /dev/tty
+  else
+    printf "\n  ${DIM}Non-interactive shell detected. Proceeding with installation automatically...${NC}\n"
+    CONTINUE_INSTALL="y"
+  fi
+
+  if [ "$CONTINUE_INSTALL" != "y" ] && [ "$CONTINUE_INSTALL" != "Y" ]; then
+    printf "\n  ${RED}Installation aborted by user.${NC}\n"
+    printf "  - To install JDK 17:  https://adoptium.net\n"
+    printf "  - To install Docker:  https://docs.docker.com/engine/install/\n\n"
+    exit 0
+  fi
+else
+  printf "  ${GREEN}Pre-flight environment checks passed.${NC}\n\n"
+fi
+
 # Fetch latest version
 VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
   | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')

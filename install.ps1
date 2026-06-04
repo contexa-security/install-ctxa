@@ -83,6 +83,111 @@ Write-Host ''
 Write-Host '  AI-Native Zero Trust Security Platform   https://ctxa.ai' -ForegroundColor Yellow
 Write-Host ''
 
+# Pre-flight check for installer
+Write-Host '  Running pre-flight environment checks...' -ForegroundColor DarkGray
+$CheckPass = $true
+
+# Check Java 17+
+$javaInstalled = $false
+$javaVersionOk = $false
+$detectedJavaVer = 'unknown'
+
+if (Get-Command java -ErrorAction SilentlyContinue) {
+    $javaInstalled = $true
+    try {
+        # Capture stderr and stdout as array of lines using cmd to prevent PowerShell ErrorActionStop trigger on stderr
+        $javaLines = cmd /c "java -version 2>&1"
+        foreach ($line in $javaLines) {
+            $lineStr = $line.ToString()
+            if ($lineStr -match 'version "([^"]+)"' -or $lineStr -match 'openjdk version "([^"]+)"') {
+                $fullVer = $Matches[1]
+                if ($fullVer -match '^1\.([0-9]+)') {
+                    $detectedJavaVer = [int]$Matches[1]
+                } elseif ($fullVer -match '^([0-9]+)') {
+                    $detectedJavaVer = [int]$Matches[1]
+                }
+                if ($detectedJavaVer -ge 17) {
+                    $javaVersionOk = $true
+                }
+                break
+            }
+        }
+    } catch { }
+}
+
+if (-not $javaVersionOk) {
+    if ($javaInstalled) {
+        Write-Host "  ! Java 17+ was not detected (detected: $detectedJavaVer)" -ForegroundColor Yellow
+    } else {
+        Write-Host '  ! Java is not installed on this machine.' -ForegroundColor Yellow
+    }
+    $CheckPass = $false
+}
+
+# Check Docker
+$dockerInstalled = $false
+$dockerRunning = $false
+
+if (Get-Command docker -ErrorAction SilentlyContinue) {
+    $dockerInstalled = $true
+    try {
+        & docker ps > $null 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $dockerRunning = $true
+        }
+    } catch { }
+}
+
+if (-not $dockerRunning) {
+    if ($dockerInstalled) {
+        Write-Host '  ! Docker daemon is not running.' -ForegroundColor Yellow
+    } else {
+        Write-Host '  ! Docker CLI is not installed.' -ForegroundColor Yellow
+    }
+    $CheckPass = $false
+}
+
+if (-not $CheckPass) {
+    Write-Host ''
+    Write-Host '  Some dependencies are missing. However, you can still install Contexa CLI' -ForegroundColor White
+    Write-Host '  to configure your Spring project using Standalone/Skip mode.' -ForegroundColor White
+    
+    $interactive = $true
+    try {
+        if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+            $interactive = $false
+        }
+    } catch {
+        $interactive = $false
+    }
+
+    $continueInstall = 'y'
+    if ($interactive) {
+        $promptAns = Read-Host '  Would you like to proceed with the CLI installation anyway? (y/n)'
+        $continueInstall = $promptAns.Trim().ToLower()
+    } else {
+        Write-Host ''
+        Write-Host '  Non-interactive shell detected. Proceeding with installation automatically...' -ForegroundColor DarkGray
+    }
+
+    if ($continueInstall -ne 'y' -and $continueInstall -ne 'yes') {
+        Write-Host ''
+        Write-Host '  Installation aborted by user.' -ForegroundColor Red
+        Write-Host '  - To install JDK 17:  https://adoptium.net'
+        Write-Host '  - To install Docker:  https://docs.docker.com/engine/install/'
+        Write-Host ''
+        
+        $ProgressPreference = $script:OriginalProgressPreference
+        if ($script:OriginalConsoleOutputEncoding) {
+            try { [Console]::OutputEncoding = $script:OriginalConsoleOutputEncoding } catch { }
+        }
+        exit 0
+    }
+} else {
+    Write-Host '  Pre-flight environment checks passed.' -ForegroundColor Green
+    Write-Host ''
+}
+
 # Resolve latest release tag from GitHub.
 try {
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing
