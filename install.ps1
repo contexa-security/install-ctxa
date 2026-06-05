@@ -311,6 +311,17 @@ try {
     if (Test-Path $tempBin) { Remove-Item -Force $tempBin -ErrorAction SilentlyContinue }
     if (Test-Path $tempSha) { Remove-Item -Force $tempSha -ErrorAction SilentlyContinue }
 }
+# Clean up legacy contexa binary in USERPROFILE\.local\bin if present on Windows to avoid PATH conflicts
+$LegacyBinPath = Join-Path $env:USERPROFILE '.local\bin\contexa.exe'
+if (Test-Path $LegacyBinPath) {
+    try {
+        Remove-Item -Force $LegacyBinPath -ErrorAction Stop
+        Write-Host "  Cleaned up legacy duplicate contexa binary at $LegacyBinPath to prevent PATH conflicts." -ForegroundColor Green
+    } catch {
+        Write-Host "  Warning: legacy duplicate contexa binary found at $LegacyBinPath but could not be removed." -ForegroundColor Yellow
+        Write-Host "           Please delete it manually to avoid PATH conflicts." -ForegroundColor Yellow
+    }
+}
 
 # Add InstallDir to the user PATH if not already present (User scope, no admin needed).
 # Both sides are normalized (trailing backslash stripped) so that
