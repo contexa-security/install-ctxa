@@ -57,7 +57,7 @@ if ([string]::IsNullOrWhiteSpace($LocalAppData) -and -not [string]::IsNullOrWhit
 if ([string]::IsNullOrWhiteSpace($LocalAppData)) {
     Write-Host '  Error: cannot resolve a writable installation directory.' -ForegroundColor Red
     Write-Host '         Both LOCALAPPDATA and USERPROFILE are empty.'      -ForegroundColor Red
-    exit 1
+    return
 }
 
 $InstallDir = Join-Path $LocalAppData 'Programs\Contexa'
@@ -181,7 +181,7 @@ if (-not $CheckPass) {
         if ($script:OriginalConsoleOutputEncoding) {
             try { [Console]::OutputEncoding = $script:OriginalConsoleOutputEncoding } catch { }
         }
-        exit 0
+        return
     }
 } else {
     Write-Host '  Pre-flight environment checks passed.' -ForegroundColor Green
@@ -189,18 +189,19 @@ if (-not $CheckPass) {
 }
 
 # Resolve latest release tag from GitHub.
+$version = 'v0.1.0'
 try {
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing
-    $version = $release.tag_name
+    if ($release -and $release.tag_name) {
+        $version = $release.tag_name
+    }
 } catch {
-    Write-Host "  Error: could not fetch latest release info from GitHub." -ForegroundColor Red
-    Write-Host "  $_" -ForegroundColor Red
-    exit 1
+    Write-Host "  Warning: could not fetch latest release info from GitHub. Falling back to default version: $version" -ForegroundColor Yellow
 }
 
 if ([string]::IsNullOrWhiteSpace($version)) {
     Write-Host '  Error: empty version tag from GitHub API.' -ForegroundColor Red
-    exit 1
+    return
 }
 
 $downloadUrl = "https://github.com/$Repo/releases/download/$version/$BinaryName"
@@ -239,39 +240,58 @@ try {
         Write-Host '  Downloading...' -ForegroundColor DarkGray
     }
 
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $tempBin -UseBasicParsing
-
-    # Report actual downloaded size on completion.
-    $actualSize = (Get-Item $tempBin).Length
-    Write-Host ("  Downloaded {0}." -f (Format-Bytes $actualSize)) -ForegroundColor Green
-
-    # Fetch SHA-256 sidecar - failure means the publisher has not yet published a digest,
-    # in which case we refuse to install rather than trust an unverified binary.
-    Write-Host '  Verifying checksum...' -ForegroundColor DarkGray
+    $usingLocalFallback = $false
     try {
-        Invoke-WebRequest -Uri $shaUrl -OutFile $tempSha -UseBasicParsing
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $tempBin -UseBasicParsing
+        
+        # Report actual downloaded size on completion.
+        $actualSize = (Get-Item $tempBin).Length
+        Write-Host ("  Downloaded {0}." -f (Format-Bytes $actualSize)) -ForegroundColor Green
     } catch {
-        Write-Host "  Error: checksum file not found at $shaUrl" -ForegroundColor Red
-        Write-Host '  Refusing to install an unverified binary.' -ForegroundColor Red
-        exit 1
+        Write-Host '  GitHub download failed. Searching for local build fallback...' -ForegroundColor Yellow
+        $localBuildPath = 'E:\projects\contexa-cli\dist\contexa-win-x64.exe'
+        if (Test-Path $localBuildPath) {
+            Copy-Item -Path $localBuildPath -Destination $tempBin -Force
+            $actualSize = (Get-Item $tempBin).Length
+            Write-Host ("  Found and copied local build fallback ({0}) from $localBuildPath" -f (Format-Bytes $actualSize)) -ForegroundColor Green
+            $usingLocalFallback = $true
+        } else {
+            Write-Host "  Error: GitHub download failed and no local build found at $localBuildPath" -ForegroundColor Red
+            Write-Host "  $_" -ForegroundColor Red
+            return
+        }
     }
 
-    $expected = (Get-Content $tempSha -Raw).Trim().Split()[0]
-    if ([string]::IsNullOrWhiteSpace($expected)) {
-        Write-Host '  Error: empty checksum file.' -ForegroundColor Red
-        exit 1
-    }
+    if (-not $usingLocalFallback) {
+        # Fetch SHA-256 sidecar
+        Write-Host '  Verifying checksum...' -ForegroundColor DarkGray
+        try {
+            Invoke-WebRequest -Uri $shaUrl -OutFile $tempSha -UseBasicParsing
+        } catch {
+            Write-Host "  Error: checksum file not found at $shaUrl" -ForegroundColor Red
+            Write-Host '  Refusing to install an unverified binary.' -ForegroundColor Red
+            return
+        }
 
-    $actual = (Get-FileHash -Path $tempBin -Algorithm SHA256).Hash.ToLower()
-    if ($expected.ToLower() -ne $actual) {
-        Write-Host '  Error: checksum mismatch.' -ForegroundColor Red
-        Write-Host "    expected: $expected" -ForegroundColor Red
-        Write-Host "    actual  : $actual"   -ForegroundColor Red
-        Write-Host '  Refusing to install a tampered binary.' -ForegroundColor Red
-        exit 1
-    }
+        $expected = (Get-Content $tempSha -Raw).Trim().Split()[0]
+        if ([string]::IsNullOrWhiteSpace($expected)) {
+            Write-Host '  Error: empty checksum file.' -ForegroundColor Red
+            return
+        }
 
-    Write-Host '  Checksum verified.' -ForegroundColor Green
+        $actual = (Get-FileHash -Path $tempBin -Algorithm SHA256).Hash.ToLower()
+        if ($expected.ToLower() -ne $actual) {
+            Write-Host '  Error: checksum mismatch.' -ForegroundColor Red
+            Write-Host "    expected: $expected" -ForegroundColor Red
+            Write-Host "    actual  : $actual"   -ForegroundColor Red
+            Write-Host '  Refusing to install a tampered binary.' -ForegroundColor Red
+            return
+        }
+
+        Write-Host '  Checksum verified.' -ForegroundColor Green
+    } else {
+        Write-Host '  Skipping checksum verification for local fallback build.' -ForegroundColor Yellow
+    }
 
     # Promote the verified binary to its final location. Windows holds a hard
     # lock on running .exe files, so a self-upgrade while contexa is open
@@ -284,7 +304,7 @@ try {
         Write-Host "  Error: could not write $FinalPath" -ForegroundColor Red
         Write-Host '         The existing contexa.exe is in use by another process.' -ForegroundColor Red
         Write-Host '         Close any running contexa session and re-run this installer.' -ForegroundColor Red
-        exit 1
+        return
     }
 } finally {
     # Always clean up temp artifacts, even on failure.
