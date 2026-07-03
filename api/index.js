@@ -1,28 +1,28 @@
 const fs = require('fs');
 const path = require('path');
 
-// vercel.json rewrites all paths to /api, but req.url preserves the original
-// request path so we can route by extension or User-Agent.
+// Vercel rewrites all paths to /api, but req.url preserves the original
+// request path so we can route by path extension and User-Agent.
 //
 // Routing:
-//   /install.ps1, /win, /windows                       -> install.ps1
-//   PowerShell User-Agent (any path)                   -> install.ps1
-//   anything else (default - keeps curl pipe sh stable) -> install.sh
+//   /install.ps1, /win, /windows, PowerShell UA -> install.ps1
+//   /install.sh, /sh, /linux, /mac, everything else -> install.sh
 module.exports = (req, res) => {
   const url = (req.url || '/').toLowerCase();
-  const ua  = (req.headers['user-agent'] || '').toLowerCase();
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
 
   const wantsPs1 =
        url.includes('.ps1')
-    || url.startsWith('/win')
+    || url === '/win'
+    || url === '/windows'
+    || url.startsWith('/win?')
+    || url.startsWith('/windows?')
     || ua.includes('powershell')
     || ua.includes('windowspowershell');
 
   const fileName = wantsPs1 ? 'install.ps1' : 'install.sh';
   const filePath = path.join(__dirname, '..', fileName);
 
-  // Fail soft when the script file is missing (deploy without expected asset).
-  // Returning a plain 503 prevents Vercel from leaking a Node stack trace.
   let body;
   try {
     body = fs.readFileSync(filePath, 'utf8');
@@ -30,19 +30,16 @@ module.exports = (req, res) => {
     res.statusCode = 503;
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
-    res.send(`# Contexa installer is temporarily unavailable.\n# Please try again in a few minutes or visit https://docs.ctxa.ai for manual setup.\n`);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.send('# Contexa installer is temporarily unavailable.\n# Please try again in a few minutes or visit https://docs.ctxa.ai for manual setup.\n');
     return;
   }
 
-  // Note on encoding for PowerShell consumers:
-  // We DO NOT prepend a UTF-8 BOM here. PowerShell 5.x's Invoke-RestMethod
-  // does not strip the BOM from the returned string, so `iex` then tries to
-  // execute it as part of the first token and fails with:
-  //   "'﻿#Requires' 용어가 cmdlet ... 으로 인식되지 않습니다."
-  // Instead we rely on the Content-Type charset below: PowerShell 5.x DOES
-  // honor "charset=utf-8" in Content-Type and decodes the body accordingly,
-  // which is enough for the box-drawing banner glyphs to round-trip cleanly.
+  // No UTF-8 BOM is prepended. PowerShell 5.x honors the charset in
+  // Content-Type and may treat a BOM from Invoke-RestMethod as part of the
+  // first token when piping to iex.
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.send(body);
 };
