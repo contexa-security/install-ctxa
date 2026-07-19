@@ -52,7 +52,20 @@ jobs:
           if ($errors.Count) { throw ($errors | Out-String) }
 
       - name: Run installer fault and locale acceptance
-        run: node --test test/installer-runtime.test.js
+        run: >-
+          node -e "const f=require('fs'),c=require('child_process');const r=c.spawnSync(process.execPath,['--test','test/installer-runtime.test.js'],{encoding:'utf8',windowsHide:true});const out=(r.stdout||'')+(r.stderr||'');f.writeFileSync('installer-runtime.tap',out);process.stdout.write(out);process.exit(r.status===null?1:r.status)"
+
+      - name: Publish installer test failure detail
+        if: failure()
+        shell: bash
+        run: |
+          node -e "const f=require('fs');const p='installer-runtime.tap';const s=f.existsSync(p)?f.readFileSync(p,'utf8').slice(-12000):'installer TAP output is missing';const e=s.replace(/%/g,'%25').replace(/\r/g,'%0D').replace(/\n/g,'%0A');console.log('::error file=test/installer-runtime.test.js,line=1,title=Installer runtime failure::'+e)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-runtime-evidence-${{ matrix.os }}
+          path: installer-runtime.tap
 
       - name: Resolve current and previous prerelease tags
         env:
