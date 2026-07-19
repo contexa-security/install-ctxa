@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional Contexa CLI prerelease tag to verify
+        required: false
+        type: string
 
 jobs:
   installer-locale:
@@ -12,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -46,5 +51,105 @@ jobs:
             (Resolve-Path '.\install.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count) { throw ($errors | Out-String) }
 
-      - name: Run Phase 5 locale acceptance
-        run: node --test --test-name-pattern="Korean success and error messages" test/installer-runtime.test.js
+      - name: Run installer fault and locale acceptance
+        run: node --test test/installer-runtime.test.js
+
+      - name: Resolve current and previous prerelease tags
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          (async () => {
+            const requested = (process.env.INPUT_RELEASE_TAG || '').trim();
+            const response = await fetch('https://api.github.com/repos/contexa-security/contexa-cli/releases?per_page=30', {
+              headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'install-ctxa-phase-acceptance' },
+            });
+            if (!response.ok) throw new Error(`release lookup failed: ${response.status}`);
+            const releases = (await response.json()).filter(release => release.prerelease && !release.draft);
+            const current = requested
+              ? releases.find(release => release.tag_name === requested)
+              : releases[0];
+            if (!current) throw new Error(`requested prerelease not found: ${requested || 'latest'}`);
+            const currentIndex = releases.findIndex(release => release.tag_name === current.tag_name);
+            const previous = releases.slice(currentIndex + 1)
+              .find(release => release.tag_name !== current.tag_name);
+            if (!previous) throw new Error(`previous prerelease not found for ${current.tag_name}`);
+            fs.appendFileSync(process.env.GITHUB_ENV,
+              `CONTEXA_PHASE_TAG=${current.tag_name}\nCONTEXA_PREVIOUS_TAG=${previous.tag_name}\n`);
+          })().catch(error => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
+
+      - name: Verify actual install, update, no-op, rollback and init/reset (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          CONTEXA_INSTALL_DIR: ${{ runner.temp }}/contexa-bin
+          CONTEXA_SKIP_PATH_UPDATE: '1'
+        run: |
+          set -euo pipefail
+          expected_current="${CONTEXA_PHASE_TAG#v}"
+          expected_previous="${CONTEXA_PREVIOUS_TAG#v}"
+          CONTEXA_VERSION="$CONTEXA_PREVIOUS_TAG" sh ./install.sh
+          test "$("$CONTEXA_INSTALL_DIR/contexa" --version)" = "$expected_previous"
+          CONTEXA_VERSION="$CONTEXA_PHASE_TAG" sh ./install.sh
+          test "$("$CONTEXA_INSTALL_DIR/contexa" --version)" = "$expected_current"
+          test "$("$CONTEXA_INSTALL_DIR/contexa.previous" --version)" = "$expected_previous"
+          CONTEXA_VERSION="$CONTEXA_PHASE_TAG" sh ./install.sh
+          CONTEXA_INSTALL_ACTION=rollback sh ./install.sh
+          test "$("$CONTEXA_INSTALL_DIR/contexa" --version)" = "$expected_previous"
+          CONTEXA_VERSION="$CONTEXA_PHASE_TAG" sh ./install.sh
+          fixture="$RUNNER_TEMP/contexa-installer-smoke"
+          mkdir -p "$fixture/src/main/java/example" "$fixture/src/main/resources"
+          printf '%s\n' "plugins { id 'org.springframework.boot' version '3.3.0' }" \
+            'repositories { mavenCentral() }' \
+            "dependencies { implementation 'org.springframework.boot:spring-boot-starter-web' }" \
+            > "$fixture/build.gradle"
+          printf "%s\n" "rootProject.name = 'installer-smoke'" > "$fixture/settings.gradle"
+          printf '%s\n' 'server:' '  port: 9080' > "$fixture/src/main/resources/application.yml"
+          "$CONTEXA_INSTALL_DIR/contexa" init --yes --dir "$fixture"
+          "$CONTEXA_INSTALL_DIR/contexa" reset --yes --dir "$fixture"
+          test ! -f "$fixture/contexa/manifest.json"
+
+      - name: Verify actual install, update, no-op, rollback and init/reset (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          CONTEXA_INSTALL_DIR: ${{ runner.temp }}\contexa-bin
+          CONTEXA_SKIP_PATH_UPDATE: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binary = Join-Path $env:CONTEXA_INSTALL_DIR 'contexa.exe'
+          $backup = Join-Path $env:CONTEXA_INSTALL_DIR 'contexa.previous.exe'
+          $env:CONTEXA_VERSION = $env:CONTEXA_PREVIOUS_TAG
+          & .\install.ps1
+          if ((& $binary --version).Trim() -ne $env:CONTEXA_PREVIOUS_TAG.TrimStart('v')) { throw 'previous install mismatch' }
+          $env:CONTEXA_VERSION = $env:CONTEXA_PHASE_TAG
+          & .\install.ps1
+          if ((& $binary --version).Trim() -ne $env:CONTEXA_PHASE_TAG.TrimStart('v')) { throw 'current update mismatch' }
+          if ((& $backup --version).Trim() -ne $env:CONTEXA_PREVIOUS_TAG.TrimStart('v')) { throw 'backup mismatch' }
+          & .\install.ps1
+          $env:CONTEXA_INSTALL_ACTION = 'rollback'
+          & .\install.ps1
+          Remove-Item Env:CONTEXA_INSTALL_ACTION
+          if ((& $binary --version).Trim() -ne $env:CONTEXA_PREVIOUS_TAG.TrimStart('v')) { throw 'rollback mismatch' }
+          $env:CONTEXA_VERSION = $env:CONTEXA_PHASE_TAG
+          & .\install.ps1
+          $fixture = Join-Path $env:RUNNER_TEMP 'contexa-installer-smoke'
+          New-Item -ItemType Directory -Force -Path (Join-Path $fixture 'src\main\resources') | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $fixture 'src\main\java\example') | Out-Null
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText((Join-Path $fixture 'build.gradle'), (@(
+            "plugins { id 'org.springframework.boot' version '3.3.0' }",
+            'repositories { mavenCentral() }',
+            "dependencies { implementation 'org.springframework.boot:spring-boot-starter-web' }"
+          ) -join "`n") + "`n", $utf8)
+          [IO.File]::WriteAllText((Join-Path $fixture 'settings.gradle'), "rootProject.name = 'installer-smoke'`n", $utf8)
+          [IO.File]::WriteAllText((Join-Path $fixture 'src\main\resources\application.yml'), "server:`n  port: 9080`n", $utf8)
+          & $binary init --yes --dir $fixture
+          & $binary reset --yes --dir $fixture
+          if (Test-Path -LiteralPath (Join-Path $fixture 'contexa\manifest.json')) { throw 'reset left manifest behind' }
