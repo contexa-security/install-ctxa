@@ -32,6 +32,7 @@ test('install.ps1 is ASCII-safe and has no unverified local fallback', () => {
   assert.match(src, /Invoke-WebRequest -Uri \$shaUrl/);
   assert.match(src, /Get-FileHash -Path \$tempBin -Algorithm SHA256/);
   assert.match(src, /Release tag\/binary version mismatch/);
+  assert.match(src, /NewGuid\(\).*'\.exe'/);
   assert.match(src, /& \$tempBin --version/);
   assert.match(src, /& \$FinalPath --help/);
   for (const command of ['contexa init', 'contexa reset', 'contexa init --simulate', 'contexa reset --simulate']) {

@@ -151,7 +151,7 @@ if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 }
 
-$tempBin = [System.IO.Path]::GetTempFileName()
+$tempBin = Join-Path ([System.IO.Path]::GetTempPath()) ("contexa-" + [guid]::NewGuid().ToString('N') + '.exe')
 $tempSha = "$tempBin.sha256"
 
 try {
