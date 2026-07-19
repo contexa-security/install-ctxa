@@ -7,6 +7,7 @@ const { spawnSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const ps1Path = path.join(root, 'install.ps1');
 const shPath = path.join(root, 'install.sh');
+const vercelPath = path.join(root, 'vercel.json');
 const api = require('../api/index');
 
 function read(file) {
@@ -80,6 +81,18 @@ test('install.sh enforces supported platforms, bounded download and atomic repla
 test('installer files are written without UTF-8 BOM', () => {
   assert.notDeepEqual([...firstBytes(ps1Path, 3)], [0xef, 0xbb, 0xbf]);
   assert.notDeepEqual([...firstBytes(shPath, 3)], [0xef, 0xbb, 0xbf]);
+});
+
+test('Vercel static-path headers match the dynamic endpoint contract', () => {
+  const config = JSON.parse(read(vercelPath));
+  for (const route of ['/install.ps1', '/install.sh']) {
+    const entry = config.headers.find(candidate => candidate.source === route);
+    assert.ok(entry, `missing Vercel header contract for ${route}`);
+    const headers = Object.fromEntries(entry.headers.map(header => [header.key.toLowerCase(), header.value]));
+    assert.equal(headers['content-type'], 'text/plain; charset=utf-8');
+    assert.equal(headers['cache-control'], 'no-store');
+    assert.equal(headers['x-content-type-options'], 'nosniff');
+  }
 });
 
 test('api prioritizes explicit paths and exposes immutable version URLs', () => {
