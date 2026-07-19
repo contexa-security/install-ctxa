@@ -5,9 +5,47 @@ REPO="contexa-security/contexa-cli"
 DEFAULT_RELEASE_API="https://api.github.com/repos/$REPO/releases/latest"
 DEFAULT_DOWNLOAD_BASE="https://github.com/$REPO/releases/download"
 
+case "${CONTEXA_LANG:-${LANG:-en}}" in
+  ko|ko[_-]*) INSTALL_LANG=ko ;;
+  *) INSTALL_LANG=en ;;
+esac
+
+msg() {
+  key=$1
+  if [ "$INSTALL_LANG" = ko ]; then
+    case "$key" in
+      fail_prefix) printf '%s' 'Contexa 설치 프로그램 실패' ;;
+      preserved) printf '%s' '가능한 경우 기존 CLI를 보존했습니다. 보고된 원인을 해결한 뒤 같은 명령을 다시 실행하세요.' ;;
+      rolled_back) printf '%s' 'Contexa CLI를 다음 버전으로 롤백했습니다: ' ;;
+      uninstalled) printf '%s' 'Contexa CLI 바이너리와 설치 프로그램 소유 PATH 항목을 제거했습니다. 프로젝트 파일은 변경하지 않았습니다.' ;;
+      already_installed) printf '%s' ' 버전이 이미 설치되어 있어 파일을 교체하지 않았습니다.' ;;
+      installed) printf '%s' ' 설치와 검증을 완료했습니다: ' ;;
+      primary) printf '%s' '주요 명령:' ;;
+      immutable) printf '%s' '동일 버전 재설치: CONTEXA_VERSION=' ;;
+      rollback) printf '%s' '롤백: CONTEXA_INSTALL_ACTION=rollback' ;;
+      uninstall) printf '%s' '제거: CONTEXA_INSTALL_ACTION=uninstall (프로젝트 reset은 별도)' ;;
+      unsupported_action) printf '%s' '지원하지 않는 CONTEXA_INSTALL_ACTION' ;;
+    esac
+  else
+    case "$key" in
+      fail_prefix) printf '%s' 'Contexa installer failed' ;;
+      preserved) printf '%s' 'The existing CLI was preserved when possible. Fix the reported cause and run the same command again.' ;;
+      rolled_back) printf '%s' 'Contexa CLI rolled back to ' ;;
+      uninstalled) printf '%s' 'Contexa CLI binary and installer-owned PATH entry were removed. Project files were not changed.' ;;
+      already_installed) printf '%s' ' is already installed; no file was replaced.' ;;
+      installed) printf '%s' ' installed and verified for ' ;;
+      primary) printf '%s' 'Primary commands:' ;;
+      immutable) printf '%s' 'Immutable reinstall: CONTEXA_VERSION=' ;;
+      rollback) printf '%s' 'Rollback: CONTEXA_INSTALL_ACTION=rollback' ;;
+      uninstall) printf '%s' 'Uninstall: CONTEXA_INSTALL_ACTION=uninstall (project reset is separate)' ;;
+      unsupported_action) printf '%s' 'Unsupported CONTEXA_INSTALL_ACTION' ;;
+    esac
+  fi
+}
+
 fail() {
-  printf '%s\n' "Contexa installer failed: $1" >&2
-  printf '%s\n' "The existing CLI was preserved when possible. Fix the reported cause and run the same command again." >&2
+  printf '%s\n' "$(msg fail_prefix): $1" >&2
+  printf '%s\n' "$(msg preserved)" >&2
   exit 1
 }
 
@@ -173,9 +211,9 @@ ensure_path() {
 }
 
 remove_profile_block() {
-  [ "${CONTEXA_SKIP_PATH_UPDATE:-0}" = 1 ] && return
+  [ "${CONTEXA_SKIP_PATH_UPDATE:-0}" = 1 ] && return 0
   PROFILE=$(profile_path)
-  [ -f "$PROFILE" ] || return
+  [ -f "$PROFILE" ] || return 0
   temporary="$PROFILE.contexa-remove.$$"
   awk '
     $0 == "# >>> contexa-cli installer >>>" { skip = 1; next }
@@ -198,7 +236,7 @@ case "$ACTION" in
     if mv "$BACKUP_PATH" "$INSTALL_PATH" && "$INSTALL_PATH" --help >/dev/null 2>&1; then
       [ -f "$rollback_temp" ] && mv "$rollback_temp" "$BACKUP_PATH"
       chmod 755 "$INSTALL_PATH"; ensure_path
-      printf '%s\n' "Contexa CLI rolled back to $(reported_version "$INSTALL_PATH")."
+      printf '%s\n' "$(msg rolled_back)$(reported_version "$INSTALL_PATH")."
       exit 0
     fi
     [ -f "$INSTALL_PATH" ] && rm -f "$INSTALL_PATH"
@@ -208,11 +246,11 @@ case "$ACTION" in
   uninstall)
     rm -f "$INSTALL_PATH" "$BACKUP_PATH"
     remove_profile_block
-    printf '%s\n' "Contexa CLI binary and installer-owned PATH entry were removed. Project files were not changed."
+    printf '%s\n' "$(msg uninstalled)"
     exit 0
     ;;
   install) ;;
-  *) fail "Unsupported CONTEXA_INSTALL_ACTION: $ACTION" ;;
+  *) fail "$(msg unsupported_action): $ACTION" ;;
 esac
 
 require_tool curl
@@ -264,7 +302,7 @@ MANIFEST_CODE_SIGNATURE=$(manifest_asset_code_signature)
 if [ -f "$INSTALL_PATH" ] && [ "$(reported_version "$INSTALL_PATH")" = "$EXPECTED_VERSION" ]; then
   smoke_binary "$INSTALL_PATH" "$EXPECTED_VERSION" || fail "The installed same-version binary failed smoke verification."
   ensure_path
-  printf '%s\n' "Contexa $VERSION is already installed; no file was replaced."
+  printf '%s\n' "Contexa $VERSION$(msg already_installed)"
   exit 0
 fi
 
@@ -301,8 +339,8 @@ if ! smoke_binary "$INSTALL_PATH" "$EXPECTED_VERSION"; then
 fi
 
 ensure_path
-printf '%s\n' "Contexa $VERSION installed and verified for $PLATFORM."
-printf '%s\n' "Primary commands:" "  contexa init" "  contexa reset" "  contexa init --simulate" "  contexa reset --simulate"
-printf '%s\n' "Immutable reinstall: CONTEXA_VERSION=$VERSION"
-printf '%s\n' "Rollback: CONTEXA_INSTALL_ACTION=rollback"
-printf '%s\n' "Uninstall: CONTEXA_INSTALL_ACTION=uninstall (project reset is separate)"
+printf '%s\n' "Contexa $VERSION$(msg installed)$PLATFORM."
+printf '%s\n' "$(msg primary)" "  contexa init" "  contexa reset" "  contexa init --simulate" "  contexa reset --simulate"
+printf '%s\n' "$(msg immutable)$VERSION"
+printf '%s\n' "$(msg rollback)"
+printf '%s\n' "$(msg uninstall)"

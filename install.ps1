@@ -3,8 +3,28 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 
+# PowerShell 5.1 otherwise uses a legacy code page when stdout/stderr is
+# redirected, corrupting Korean output consumed by CI and automation.
+$script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $script:Utf8NoBom
+$OutputEncoding = $script:Utf8NoBom
+
 $script:OriginalProgressPreference = $ProgressPreference
 $ProgressPreference = 'SilentlyContinue'
+
+$requestedLanguage = [Environment]::GetEnvironmentVariable('CONTEXA_LANG')
+if ([string]::IsNullOrWhiteSpace($requestedLanguage)) {
+    $requestedLanguage = [System.Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName
+}
+$script:InstallerLanguage = if ($requestedLanguage -match '^(?i:ko)(?:[-_].*)?$') { 'ko' } else { 'en' }
+
+function Select-InstallerText {
+    param([string]$English, [string]$KoreanUtf8Base64)
+    if ($script:InstallerLanguage -eq 'ko') {
+        return [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($KoreanUtf8Base64))
+    }
+    return $English
+}
 
 $script:Repository = 'contexa-security/contexa-cli'
 $script:DefaultReleaseApi = 'https://api.github.com/repos/contexa-security/contexa-cli/releases/latest'
@@ -207,7 +227,7 @@ function Invoke-Rollback {
         & $FinalPath --help *> $null
         if ($LASTEXITCODE -ne 0) { throw 'Rolled-back binary failed smoke verification.' }
         if (Test-Path -LiteralPath $rollbackTemp) { [System.IO.File]::Move($rollbackTemp, $BackupPath) }
-        Write-Host ('  Rolled back Contexa CLI to ' + $version) -ForegroundColor Green
+        Write-Host ('  ' + (Select-InstallerText 'Rolled back Contexa CLI to ' 'Q29udGV4YSBDTEnrpbwg64uk7J2MIOuyhOyghOycvOuhnCDroaTrsLHtlojsirXri4jri6Q6IA==') + $version) -ForegroundColor Green
     } catch {
         if (-not (Test-Path -LiteralPath $FinalPath) -and (Test-Path -LiteralPath $rollbackTemp)) {
             [System.IO.File]::Move($rollbackTemp, $FinalPath)
@@ -228,7 +248,7 @@ function Invoke-Uninstall {
             [Environment]::SetEnvironmentVariable('Path', ($remaining -join ';'), 'User')
         }
     }
-    Write-Host '  Contexa CLI binary and installer-owned PATH entry were removed. Project files were not changed.' -ForegroundColor Green
+    Write-Host ('  ' + (Select-InstallerText 'Contexa CLI binary and installer-owned PATH entry were removed. Project files were not changed.' 'Q29udGV4YSBDTEkg67CU7J2064SI66as7JmAIOyEpOy5mCDtlITroZzqt7jrnqgg7IaM7JygIFBBVEgg7ZWt66qp7J2EIOygnOqxsO2WiOyKteuLiOuLpC4g7ZSE66Gc7KCd7Yq4IO2MjOydvOydgCDrs4Dqsr3tlZjsp4Ag7JWK7JWY7Iq164uI64ukLg==')) -ForegroundColor Green
 }
 
 function Invoke-ContexaInstaller {
@@ -240,7 +260,9 @@ function Invoke-ContexaInstaller {
 
     if ($action -eq 'rollback') { Invoke-Rollback $finalPath $backupPath; Ensure-CommandPath $installDir $finalPath; return }
     if ($action -eq 'uninstall') { Invoke-Uninstall $installDir $finalPath $backupPath; return }
-    if ($action -ne 'install') { throw ('Unsupported CONTEXA_INSTALL_ACTION: ' + $action) }
+    if ($action -ne 'install') {
+        throw ((Select-InstallerText 'Unsupported CONTEXA_INSTALL_ACTION' '7KeA7JuQ7ZWY7KeAIOyViuuKlCBDT05URVhBX0lOU1RBTExfQUNUSU9O') + ': ' + $action)
+    }
 
     if (-not (Test-Path -LiteralPath $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
     $version = Get-TargetVersion
@@ -268,7 +290,7 @@ function Invoke-ContexaInstaller {
         if ($installedVersion -eq $expectedCliVersion) {
             Test-BinarySmoke $finalPath $expectedCliVersion
             Ensure-CommandPath $installDir $finalPath
-            Write-Host ('  Contexa ' + $version + ' is already installed; no file was replaced.') -ForegroundColor Green
+            Write-Host ('  Contexa ' + $version + (Select-InstallerText ' is already installed; no file was replaced.' 'IOuyhOyghOydtCDsnbTrr7gg7ISk7LmY65CY7Ja0IOyeiOyWtCDtjIzsnbzsnYQg6rWQ7LK07ZWY7KeAIOyViuyVmOyKteuLiOuLpC4=')) -ForegroundColor Green
             return
         }
     }
@@ -306,15 +328,15 @@ function Invoke-ContexaInstaller {
             throw ('Final binary smoke failed; previous CLI was restored. ' + $_.Exception.Message)
         }
         Ensure-CommandPath $installDir $finalPath
-        Write-Host ('  Contexa ' + $version + ' installed and verified.') -ForegroundColor Green
-        Write-Host '  Primary commands:'
+        Write-Host ('  Contexa ' + $version + (Select-InstallerText ' installed and verified.' 'IOyEpOy5mOyZgCDqsoDspp3snYQg7JmE66OM7ZaI7Iq164uI64ukLg==')) -ForegroundColor Green
+        Write-Host ('  ' + (Select-InstallerText 'Primary commands:' '7KO87JqUIOuqheuguTo='))
         Write-Host '    contexa init'
         Write-Host '    contexa reset'
         Write-Host '    contexa init --simulate'
         Write-Host '    contexa reset --simulate'
-        Write-Host ('  Immutable reinstall: set CONTEXA_VERSION=' + $version + ' and run this installer again.')
-        Write-Host '  Rollback: set CONTEXA_INSTALL_ACTION=rollback and run this installer.'
-        Write-Host '  Uninstall: set CONTEXA_INSTALL_ACTION=uninstall and run this installer. Project reset is separate.'
+        Write-Host ('  ' + (Select-InstallerText 'Immutable reinstall: set CONTEXA_VERSION=' '64+Z7J28IOuyhOyghCDsnqzshKTsuZg6IENPTlRFWEFfVkVSU0lPTj0=') + $version + (Select-InstallerText ' and run this installer again.' '7J2EIOyEpOygle2VmOqzoCDshKTsuZgg7ZSE66Gc6re4656o7J2EIOuLpOyLnCDsi6TtlontlZjshLjsmpQu'))
+        Write-Host ('  ' + (Select-InstallerText 'Rollback: set CONTEXA_INSTALL_ACTION=rollback and run this installer.' '66Gk67CxOiBDT05URVhBX0lOU1RBTExfQUNUSU9OPXJvbGxiYWNr7J2EIOyEpOygle2VmOqzoCDshKTsuZgg7ZSE66Gc6re4656o7J2EIOyLpO2Wie2VmOyEuOyalC4='))
+        Write-Host ('  ' + (Select-InstallerText 'Uninstall: set CONTEXA_INSTALL_ACTION=uninstall and run this installer. Project reset is separate.' '7KCc6rGwOiBDT05URVhBX0lOU1RBTExfQUNUSU9OPXVuaW5zdGFsbOydhCDshKTsoJXtlZjqs6Ag7ISk7LmYIO2UhOuhnOq3uOueqOydhCDsi6TtlontlZjshLjsmpQuIO2UhOuhnOygne2KuCByZXNldOydgCDrs4Trj4TsnoXri4jri6Qu'))
     } catch {
         if ($oldMoved -and -not (Test-Path -LiteralPath $finalPath) -and (Test-Path -LiteralPath $backupPath)) {
             [System.IO.File]::Move($backupPath, $finalPath)
@@ -329,8 +351,8 @@ try {
     Invoke-ContexaInstaller
     exit 0
 } catch {
-    [Console]::Error.WriteLine('Contexa installer failed: ' + $_.Exception.Message)
-    [Console]::Error.WriteLine('The existing CLI was preserved when possible. Fix the reported cause and run the same command again.')
+    [Console]::Error.WriteLine((Select-InstallerText 'Contexa installer failed: ' 'Q29udGV4YSDshKTsuZgg7ZSE66Gc6re4656oIOyLpO2MqDog') + $_.Exception.Message)
+    [Console]::Error.WriteLine((Select-InstallerText 'The existing CLI was preserved when possible. Fix the reported cause and run the same command again.' '6rCA64ql7ZWcIOqyveyasCDquLDsobQgQ0xJ66W8IOuztOyhtO2WiOyKteuLiOuLpC4g67O06rOg65CcIOybkOyduOydhCDtlbTqsrDtlZwg65KkIOqwmeydgCDrqoXroLnsnYQg64uk7IucIOyLpO2Wie2VmOyEuOyalC4='))
     exit 1
 } finally {
     $ProgressPreference = $script:OriginalProgressPreference

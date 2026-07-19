@@ -1,0 +1,50 @@
+name: Phase acceptance
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  installer-locale:
+    name: Installer locale / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate installer syntax (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: sh -n install.sh
+
+      - name: Validate installer syntax (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path '.\install.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
+
+      - name: Validate installer syntax (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path '.\install.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
+
+      - name: Run Phase 5 locale acceptance
+        run: node --test --test-name-pattern="Korean success and error messages" test/installer-runtime.test.js

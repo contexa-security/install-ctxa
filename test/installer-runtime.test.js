@@ -11,6 +11,9 @@ const root = path.join(__dirname, '..');
 const ps1 = path.join(root, 'install.ps1');
 const sh = path.join(root, 'install.sh');
 const powershell = process.platform === 'win32' ? 'powershell.exe' : null;
+const pwsh = process.platform === 'win32' ? 'pwsh.exe' : null;
+const pwshAvailable = !!pwsh && !spawnSync(pwsh, ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'],
+  { windowsHide: true }).error;
 const gitSh = process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\sh.exe' : 'sh';
 
 function sha256(bytes) {
@@ -147,6 +150,10 @@ function runWindowsInstaller(env) {
   return run(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1], env);
 }
 
+function runPwshInstaller(env) {
+  return run(pwsh, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1], env);
+}
+
 test('PowerShell installer performs install, no-op, update, rollback and uninstall', { skip: process.platform !== 'win32', timeout: 30000 }, async (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-lifecycle-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
@@ -266,4 +273,84 @@ test('POSIX installer completes a signed Linux x64 installation against a fake r
     assert.equal(versionResult.status, 0, versionResult.stderr);
     assert.equal(versionResult.stdout.trim(), version);
   });
+});
+
+test('PowerShell 5.1 installer emits intact Korean success and error messages',
+  { skip: process.platform !== 'win32', timeout: 10000 }, async (t) => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-ko-ps5-'));
+    t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+    const baseEnv = {
+      CONTEXA_LANG: 'ko',
+      CONTEXA_INSTALL_DIR: path.join(temp, 'bin'),
+      CONTEXA_SKIP_PATH_UPDATE: '1',
+    };
+    const uninstall = await runWindowsInstaller({
+      ...baseEnv,
+      CONTEXA_INSTALL_ACTION: 'uninstall',
+    });
+    assert.equal(uninstall.code, 0, uninstall.stderr || uninstall.stdout);
+    assert.match(uninstall.stdout, /바이너리.*제거/);
+    assert.equal((uninstall.stdout + uninstall.stderr).includes('\uFFFD'), false);
+
+    const invalid = await runWindowsInstaller({
+      ...baseEnv,
+      CONTEXA_INSTALL_ACTION: 'invalid',
+    });
+    assert.equal(invalid.code, 1);
+    assert.match(invalid.stderr, /설치 프로그램 실패.*지원하지 않는 CONTEXA_INSTALL_ACTION/s);
+    assert.equal((invalid.stdout + invalid.stderr).includes('\uFFFD'), false);
+  });
+
+test('PowerShell 7 installer emits intact Korean success and error messages',
+  { skip: process.platform !== 'win32' || !pwshAvailable, timeout: 10000 }, async (t) => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-ko-ps7-'));
+    t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+    const baseEnv = {
+      CONTEXA_LANG: 'ko',
+      CONTEXA_INSTALL_DIR: path.join(temp, 'bin'),
+      CONTEXA_SKIP_PATH_UPDATE: '1',
+    };
+    const uninstall = await runPwshInstaller({
+      ...baseEnv,
+      CONTEXA_INSTALL_ACTION: 'uninstall',
+    });
+    assert.equal(uninstall.code, 0, uninstall.stderr || uninstall.stdout);
+    assert.match(uninstall.stdout, /바이너리.*제거/);
+    assert.equal((uninstall.stdout + uninstall.stderr).includes('\uFFFD'), false);
+
+    const invalid = await runPwshInstaller({
+      ...baseEnv,
+      CONTEXA_INSTALL_ACTION: 'invalid',
+    });
+    assert.equal(invalid.code, 1);
+    assert.match(invalid.stderr, /설치 프로그램 실패.*지원하지 않는 CONTEXA_INSTALL_ACTION/s);
+    assert.equal((invalid.stdout + invalid.stderr).includes('\uFFFD'), false);
+  });
+
+test('POSIX installer emits intact Korean success and error messages', { timeout: 10000 }, async (t) => {
+  if (process.platform === 'win32' && !fs.existsSync(gitSh)) return;
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-ko-posix-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const scriptPath = process.platform === 'win32' ? sh.replace(/\\/g, '/') : sh;
+  const baseEnv = {
+    HOME: temp,
+    CONTEXA_LANG: 'ko',
+    CONTEXA_INSTALL_DIR: path.join(temp, 'bin'),
+    CONTEXA_SKIP_PATH_UPDATE: '1',
+  };
+  const uninstall = await run(gitSh, [scriptPath], {
+    ...baseEnv,
+    CONTEXA_INSTALL_ACTION: 'uninstall',
+  });
+  assert.equal(uninstall.code, 0, uninstall.stderr || uninstall.stdout);
+  assert.match(uninstall.stdout, /바이너리.*제거/);
+  assert.equal((uninstall.stdout + uninstall.stderr).includes('\uFFFD'), false);
+
+  const invalid = await run(gitSh, [scriptPath], {
+    ...baseEnv,
+    CONTEXA_INSTALL_ACTION: 'invalid',
+  });
+  assert.equal(invalid.code, 1);
+  assert.match(invalid.stderr, /설치 프로그램 실패.*지원하지 않는 CONTEXA_INSTALL_ACTION/s);
+  assert.equal((invalid.stdout + invalid.stderr).includes('\uFFFD'), false);
 });
