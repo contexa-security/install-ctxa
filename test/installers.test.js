@@ -85,7 +85,12 @@ test('installer files are written without UTF-8 BOM', () => {
 
 test('Vercel static-path headers match the dynamic endpoint contract', () => {
   const config = JSON.parse(read(vercelPath));
+  assert.equal(config.env.CONTEXA_STABLE_INSTALLER_TAG, 'v0.1.1');
   for (const route of ['/install.ps1', '/install.sh']) {
+    const redirect = config.redirects.find(candidate => candidate.source === route);
+    assert.ok(redirect, `missing stable-channel redirect for ${route}`);
+    assert.equal(redirect.destination, `https://raw.githubusercontent.com/contexa-security/install-ctxa/v0.1.1${route}`);
+    assert.equal(redirect.permanent, false);
     const entry = config.headers.find(candidate => candidate.source === route);
     assert.ok(entry, `missing Vercel header contract for ${route}`);
     const headers = Object.fromEntries(entry.headers.map(header => [header.key.toLowerCase(), header.value]));
@@ -127,6 +132,18 @@ test('api prioritizes explicit paths and exposes immutable version URLs', () => 
   assert.equal(immutable.headers['cache-control'], 'public, max-age=31536000, immutable');
   const caseSensitiveTag = invoke('/v0.1.2-Phase1.1/install.sh');
   assert.equal(caseSensitiveTag.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/v0.1.2-Phase1.1/install.sh');
+
+  const originalStableTag = process.env.CONTEXA_STABLE_INSTALLER_TAG;
+  try {
+    process.env.CONTEXA_STABLE_INSTALLER_TAG = 'v0.1.1';
+    const stable = invoke('/', 'WindowsPowerShell/5.1');
+    assert.equal(stable.statusCode, 302);
+    assert.equal(stable.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/v0.1.1/install.ps1');
+    assert.equal(stable.headers['cache-control'], 'no-store');
+  } finally {
+    if (originalStableTag === undefined) delete process.env.CONTEXA_STABLE_INSTALLER_TAG;
+    else process.env.CONTEXA_STABLE_INSTALLER_TAG = originalStableTag;
+  }
 
   const originalReadFileSync = fs.readFileSync;
   let unavailable;

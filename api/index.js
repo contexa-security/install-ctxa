@@ -31,6 +31,23 @@ module.exports = (req, res) => {
     || (!explicitSh && !shellAlias && (windowsAlias || ua.includes('powershell') || ua.includes('windowspowershell')));
 
   const fileName = wantsPs1 ? 'install.ps1' : 'install.sh';
+  const stableTag = process.env.CONTEXA_STABLE_INSTALLER_TAG;
+  if (stableTag) {
+    if (!/^v[0-9A-Za-z][0-9A-Za-z._-]*$/.test(stableTag)) {
+      res.statusCode = 503;
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send('# Contexa stable installer channel is temporarily unavailable.\n');
+      return;
+    }
+    res.statusCode = 302;
+    res.setHeader('Location', `https://raw.githubusercontent.com/contexa-security/install-ctxa/${stableTag}/${fileName}`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.send('');
+    return;
+  }
   const filePath = path.join(__dirname, '..', fileName);
 
   let body;

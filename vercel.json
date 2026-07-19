@@ -1,4 +1,19 @@
 {
+  "env": {
+    "CONTEXA_STABLE_INSTALLER_TAG": "v0.1.1"
+  },
+  "redirects": [
+    {
+      "source": "/install.ps1",
+      "destination": "https://raw.githubusercontent.com/contexa-security/install-ctxa/v0.1.1/install.ps1",
+      "permanent": false
+    },
+    {
+      "source": "/install.sh",
+      "destination": "https://raw.githubusercontent.com/contexa-security/install-ctxa/v0.1.1/install.sh",
+      "permanent": false
+    }
+  ],
   "rewrites": [
     { "source": "/(.*)", "destination": "/api" }
   ],
