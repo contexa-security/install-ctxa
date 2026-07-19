@@ -177,6 +177,18 @@ function Get-ReportedVersion {
     return ($output | Select-Object -First 1).ToString().Trim()
 }
 
+function Get-Sha256FileHex {
+    param([string]$Path)
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Test-BinarySmoke {
     param([string]$Binary, [string]$ExpectedVersion)
     if ((Get-ReportedVersion $Binary) -ne $ExpectedVersion) {
@@ -303,7 +315,7 @@ function Invoke-ContexaInstaller {
         $sidecarText = (Convert-BytesToText (Invoke-BoundedDownload ($releaseBase + '/' + $asset.checksumFile))).Trim()
         $sidecarHash = $sidecarText.Split()[0].ToLowerInvariant()
         $manifestHash = ([string]$asset.sha256).ToLowerInvariant()
-        $actualHash = (Get-FileHash -LiteralPath $temporaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actualHash = Get-Sha256FileHex $temporaryPath
         if ($sidecarHash -ne $manifestHash -or $actualHash -ne $manifestHash) {
             throw 'Binary digest does not match the signed release manifest. The existing CLI was not changed.'
         }
