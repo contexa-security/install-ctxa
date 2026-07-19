@@ -191,15 +191,14 @@ function Get-Sha256FileHex {
 
 function Assert-UnsignedAuthenticodeFile {
     param([string]$Path)
-    try {
-        $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($Path)
-    } catch [System.Security.Cryptography.CryptographicException] {
-        return
+    $modulePath = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1'
+    if (-not (Test-Path -LiteralPath $modulePath)) {
+        throw ('Windows Authenticode verifier module is missing: ' + $modulePath)
     }
-    try {
-        throw 'Windows code-signature contract mismatch: Authenticode signature is present.'
-    } finally {
-        if ($null -ne $certificate) { $certificate.Dispose() }
+    Import-Module -Name $modulePath -ErrorAction Stop
+    $signatureStatus = (Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $Path).Status.ToString()
+    if ($signatureStatus -ne 'NotSigned') {
+        throw ('Windows code-signature contract mismatch: ' + $signatureStatus)
     }
 }
 
