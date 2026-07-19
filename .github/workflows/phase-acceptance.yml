@@ -137,7 +137,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $binary = Join-Path $env:CONTEXA_INSTALL_DIR 'contexa.exe'
-          $backup = Join-Path $env:CONTEXA_INSTALL_DIR 'contexa.previous.exe'
+          $backup = Join-Path $env:CONTEXA_INSTALL_DIR 'contexa.exe.previous'
           $env:CONTEXA_VERSION = $env:CONTEXA_PREVIOUS_TAG
           & .\install.ps1
           if ((& $binary --version).Trim() -ne $env:CONTEXA_PREVIOUS_TAG.TrimStart('v')) { throw 'previous install mismatch' }
