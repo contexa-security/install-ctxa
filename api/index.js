@@ -31,9 +31,9 @@ module.exports = (req, res) => {
     || (!explicitSh && !shellAlias && (windowsAlias || ua.includes('powershell') || ua.includes('windowspowershell')));
 
   const fileName = wantsPs1 ? 'install.ps1' : 'install.sh';
-  const stableTag = process.env.CONTEXA_STABLE_INSTALLER_TAG;
-  if (stableTag) {
-    if (!/^v[0-9A-Za-z][0-9A-Za-z._-]*$/.test(stableTag)) {
+  const stableRef = process.env.CONTEXA_STABLE_INSTALLER_REF;
+  if (stableRef) {
+    if (!/^(?:v[0-9A-Za-z][0-9A-Za-z._-]*|[0-9a-f]{40})$/.test(stableRef)) {
       res.statusCode = 503;
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('Cache-Control', 'no-store');
@@ -42,7 +42,7 @@ module.exports = (req, res) => {
       return;
     }
     res.statusCode = 302;
-    res.setHeader('Location', `https://raw.githubusercontent.com/contexa-security/install-ctxa/${stableTag}/${fileName}`);
+    res.setHeader('Location', `https://raw.githubusercontent.com/contexa-security/install-ctxa/${stableRef}/${fileName}`);
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send('');

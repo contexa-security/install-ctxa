@@ -1,16 +1,16 @@
 {
   "env": {
-    "CONTEXA_STABLE_INSTALLER_TAG": "v0.1.1"
+    "CONTEXA_STABLE_INSTALLER_REF": "23721bb0e7b561a7deb356656a7e2e3a879bc086"
   },
   "redirects": [
     {
       "source": "/install.ps1",
-      "destination": "https://raw.githubusercontent.com/contexa-security/install-ctxa/v0.1.1/install.ps1",
+      "destination": "https://raw.githubusercontent.com/contexa-security/install-ctxa/23721bb0e7b561a7deb356656a7e2e3a879bc086/install.ps1",
       "permanent": false
     },
     {
       "source": "/install.sh",
-      "destination": "https://raw.githubusercontent.com/contexa-security/install-ctxa/v0.1.1/install.sh",
+      "destination": "https://raw.githubusercontent.com/contexa-security/install-ctxa/23721bb0e7b561a7deb356656a7e2e3a879bc086/install.sh",
       "permanent": false
     }
   ],
