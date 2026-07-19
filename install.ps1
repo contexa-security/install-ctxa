@@ -189,6 +189,20 @@ function Get-Sha256FileHex {
     }
 }
 
+function Assert-UnsignedAuthenticodeFile {
+    param([string]$Path)
+    try {
+        $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($Path)
+    } catch [System.Security.Cryptography.CryptographicException] {
+        return
+    }
+    try {
+        throw 'Windows code-signature contract mismatch: Authenticode signature is present.'
+    } finally {
+        if ($null -ne $certificate) { $certificate.Dispose() }
+    }
+}
+
 function Test-BinarySmoke {
     param([string]$Binary, [string]$ExpectedVersion)
     if ((Get-ReportedVersion $Binary) -ne $ExpectedVersion) {
@@ -322,8 +336,7 @@ function Invoke-ContexaInstaller {
         if ($asset.codeSignature -ne 'unsigned-snapshot') {
             throw ('Unsupported Windows code-signature contract: ' + $asset.codeSignature)
         }
-        $signatureStatus = (Get-AuthenticodeSignature $temporaryPath).Status.ToString()
-        if ($signatureStatus -ne 'NotSigned') { throw ('Windows code-signature contract mismatch: ' + $signatureStatus) }
+        Assert-UnsignedAuthenticodeFile $temporaryPath
         Test-BinarySmoke $temporaryPath $expectedCliVersion
 
         if (Test-Path -LiteralPath $backupPath) { Remove-Item -LiteralPath $backupPath -Force }
