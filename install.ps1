@@ -206,6 +206,17 @@ try {
     }
     Write-Host '  Checksum verified.' -ForegroundColor Green
 
+    $expectedCliVersion = [regex]::Replace($version, '^[vV]', '')
+    try {
+        $reportedCliVersion = (& $tempBin --version 2>&1 | Select-Object -First 1).ToString().Trim()
+    } catch {
+        throw "Downloaded binary version check failed: $_"
+    }
+    if ($reportedCliVersion -ne $expectedCliVersion) {
+        throw "Release tag/binary version mismatch. Tag=$version, binary=$reportedCliVersion"
+    }
+    Write-Host "  Version contract verified: $reportedCliVersion" -ForegroundColor Green
+
     try {
         Move-Item -Force -Path $tempBin -Destination $FinalPath
     } catch [System.IO.IOException] {
@@ -262,5 +273,8 @@ Write-Host "  Contexa $version installed!" -ForegroundColor Green
 Write-Host ''
 Write-Host '  Get started:' -ForegroundColor White
 Write-Host '    cd your-spring-project' -ForegroundColor Cyan
-Write-Host '    contexa init'           -ForegroundColor Cyan
+Write-Host '    contexa init'                 -ForegroundColor Cyan
+Write-Host '    contexa reset'                -ForegroundColor Cyan
+Write-Host '    contexa init --simulate'      -ForegroundColor Cyan
+Write-Host '    contexa reset --simulate'     -ForegroundColor Cyan
 Write-Host ''

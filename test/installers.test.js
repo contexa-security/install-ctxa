@@ -31,7 +31,12 @@ test('install.ps1 is ASCII-safe and has no unverified local fallback', () => {
   assertNoReplacementOrBoxDrawing(src);
   assert.match(src, /Invoke-WebRequest -Uri \$shaUrl/);
   assert.match(src, /Get-FileHash -Path \$tempBin -Algorithm SHA256/);
+  assert.match(src, /Release tag\/binary version mismatch/);
+  assert.match(src, /& \$tempBin --version/);
   assert.match(src, /& \$FinalPath --help/);
+  for (const command of ['contexa init', 'contexa reset', 'contexa init --simulate', 'contexa reset --simulate']) {
+    assert.ok(src.includes(command), `missing primary command: ${command}`);
+  }
 });
 
 test('install.sh is POSIX-oriented and avoids corrupted banner bytes', () => {
@@ -43,7 +48,12 @@ test('install.sh is POSIX-oriented and avoids corrupted banner bytes', () => {
   assert.match(src, /CONTEXA_INSTALL_DIR/);
   assert.match(src, /HOME\/.local\/bin/);
   assert.match(src, /checksum mismatch/);
+  assert.match(src, /release tag\/binary version mismatch/);
+  assert.match(src, /"\$TMP_BIN" --version/);
   assert.match(src, /"\$INSTALL_PATH" --help/);
+  for (const command of ['contexa init', 'contexa reset', 'contexa init --simulate', 'contexa reset --simulate']) {
+    assert.ok(src.includes(command), `missing primary command: ${command}`);
+  }
 });
 
 test('installer files are written without UTF-8 BOM', () => {

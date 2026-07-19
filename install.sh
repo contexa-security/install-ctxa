@@ -193,6 +193,13 @@ if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
 fi
 success "Checksum verified."
 
+EXPECTED_CLI_VERSION=${VERSION#v}
+REPORTED_CLI_VERSION=$("$TMP_BIN" --version 2>/dev/null || true)
+if [ "$REPORTED_CLI_VERSION" != "$EXPECTED_CLI_VERSION" ]; then
+  fail "release tag/binary version mismatch. Tag=$VERSION, binary=${REPORTED_CLI_VERSION:-unavailable}"
+fi
+success "Version contract verified: $REPORTED_CLI_VERSION"
+
 mv "$TMP_BIN" "$INSTALL_PATH"
 chmod +x "$INSTALL_PATH"
 
@@ -213,4 +220,7 @@ printf "\n"
 success "Contexa $VERSION installed!"
 printf "\n  Get started:\n"
 printf "    cd your-spring-project\n"
-printf "    contexa init\n\n"
+printf "    contexa init\n"
+printf "    contexa reset\n"
+printf "    contexa init --simulate\n"
+printf "    contexa reset --simulate\n\n"
