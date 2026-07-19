@@ -1,226 +1,308 @@
 #!/bin/sh
 set -eu
-(set -o pipefail) 2>/dev/null && set -o pipefail || true
 
 REPO="contexa-security/contexa-cli"
-BIN="contexa"
+DEFAULT_RELEASE_API="https://api.github.com/repos/$REPO/releases/latest"
+DEFAULT_DOWNLOAD_BASE="https://github.com/$REPO/releases/download"
 
-CYAN='\033[0;36m'
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-DIM='\033[2m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-info() { printf "  %b%s%b\n" "$DIM" "$1" "$NC"; }
-success() { printf "  %b%s%b\n" "$GREEN" "$1" "$NC"; }
-warn() { printf "  %b! %s%b\n" "$YELLOW" "$1" "$NC"; }
-fail() { printf "  %bError: %s%b\n" "$RED" "$1" "$NC"; exit 1; }
-
-fmt_bytes() {
-  bytes=${1:-0}
-  case "$bytes" in ''|*[!0-9]*) echo ""; return ;; esac
-  if [ "$bytes" -lt 1024 ]; then
-    echo "$bytes B"
-  elif [ "$bytes" -lt 1048576 ]; then
-    awk "BEGIN { printf \"%.1f KB\", $bytes/1024 }"
-  elif [ "$bytes" -lt 1073741824 ]; then
-    awk "BEGIN { printf \"%.1f MB\", $bytes/1048576 }"
-  else
-    awk "BEGIN { printf \"%.2f GB\", $bytes/1073741824 }"
-  fi
+fail() {
+  printf '%s\n' "Contexa installer failed: $1" >&2
+  printf '%s\n' "The existing CLI was preserved when possible. Fix the reported cause and run the same command again." >&2
+  exit 1
 }
 
-print_banner() {
-  printf "\n"
-  printf "  %b===============================================%b\n" "$CYAN" "$NC"
-  printf "  %b Contexa CLI Installer%b\n" "$CYAN$BOLD" "$NC"
-  printf "  %b AI-Native Zero Trust Security Platform%b\n" "$YELLOW" "$NC"
-  printf "  %b https://ctxa.ai%b\n" "$DIM" "$NC"
-  printf "  %b===============================================%b\n\n" "$CYAN" "$NC"
+positive_int() {
+  name=$1
+  value=$2
+  maximum=$3
+  case "$value" in ''|*[!0-9]*) fail "$name must be an integer from 1 to $maximum." ;; esac
+  [ "$value" -ge 1 ] && [ "$value" -le "$maximum" ] || fail "$name must be an integer from 1 to $maximum."
+  printf '%s' "$value"
 }
 
-check_environment() {
-  info "Running environment checks..."
-
-  if command -v java >/dev/null 2>&1; then
-    java_major=$(java -version 2>&1 | awk -F '"' '/version/ {print $2; exit}' | awk -F. '{ if ($1 == "1") print $2; else print $1 }')
-    if [ -n "$java_major" ] && [ "$java_major" -ge 17 ] 2>/dev/null; then
-      success "Java check: JDK 17+ detected."
-    else
-      warn "Java 17+ was not detected. CLI installation can continue, but Contexa projects require JDK 17+."
-    fi
-  else
-    warn "Java was not found. CLI installation can continue, but Contexa projects require JDK 17+."
-  fi
-
-  if command -v docker >/dev/null 2>&1; then
-    if docker info >/dev/null 2>&1; then
-      success "Docker check: daemon is running."
-    else
-      warn "Docker daemon is not running. Basic CLI install is OK; local infra commands will need it."
-    fi
-  else
-    warn "Docker CLI was not found. Basic CLI install is OK; local infra commands will need Docker."
-  fi
-  printf "\n"
-}
+CONNECT_TIMEOUT=$(positive_int CONTEXA_HTTP_CONNECT_TIMEOUT_SEC "${CONTEXA_HTTP_CONNECT_TIMEOUT_SEC:-5}" 60)
+TOTAL_TIMEOUT=$(positive_int CONTEXA_HTTP_TOTAL_TIMEOUT_SEC "${CONTEXA_HTTP_TOTAL_TIMEOUT_SEC:-30}" 300)
+RETRIES=$(positive_int CONTEXA_HTTP_RETRIES "${CONTEXA_HTTP_RETRIES:-2}" 5)
 
 require_tool() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    fail "$1 is required by the installer. Please install it and retry."
-  fi
+  command -v "$1" >/dev/null 2>&1 || fail "$1 is required. Install it and retry."
+}
+
+download() {
+  curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TOTAL_TIMEOUT" \
+    --retry "$RETRIES" --retry-max-time "$TOTAL_TIMEOUT" --retry-delay 1 \
+    --retry-connrefused "$1" -o "$2"
 }
 
 resolve_install_dir() {
   if [ -n "${CONTEXA_INSTALL_DIR:-}" ]; then
-    printf "%s" "$CONTEXA_INSTALL_DIR"
-    return
+    printf '%s' "$CONTEXA_INSTALL_DIR"
+  elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+    printf '%s' /usr/local/bin
+  else
+    [ -n "${HOME:-}" ] || fail "HOME is empty. Set CONTEXA_INSTALL_DIR and retry."
+    printf '%s' "$HOME/.local/bin"
   fi
-
-  if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
-    printf "%s" "/usr/local/bin"
-    return
-  fi
-
-  if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
-    printf "%s" "/usr/local/bin"
-    return
-  fi
-
-  if [ -z "${HOME:-}" ]; then
-    fail "HOME is empty and CONTEXA_INSTALL_DIR was not provided."
-  fi
-  printf "%s" "$HOME/.local/bin"
 }
 
-print_banner
-require_tool curl
-require_tool awk
-check_environment
+version_ge() {
+  awk -v actual="$1" -v minimum="$2" 'BEGIN {
+    split(actual, a, "."); split(minimum, m, ".");
+    for (i = 1; i <= 3; i++) {
+      av = a[i] + 0; mv = m[i] + 0;
+      if (av > mv) exit 0;
+      if (av < mv) exit 1;
+    }
+    exit 0;
+  }'
+}
 
-VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-  | awk -F '"' '/"tag_name"/ {print $4; exit}')
+detect_platform() {
+  OS=$(uname -s)
+  ARCH=$(uname -m)
+  case "$OS:$ARCH" in
+    Linux:x86_64)
+      FILE=contexa-linux-x64
+      PLATFORM="Linux x64"
+      EXPECTED_CODE_SIGNATURE=unsigned-snapshot
+      ldd --version 2>&1 | grep -qi musl && fail "Linux musl is not supported. The existing CLI was not changed."
+      require_tool getconf
+      GLIBC_VERSION=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
+      [ -n "$GLIBC_VERSION" ] || fail "Could not determine glibc version."
+      version_ge "$GLIBC_VERSION" 2.28 || fail "glibc 2.28 or newer is required; found $GLIBC_VERSION."
+      ;;
+    Darwin:arm64)
+      FILE=contexa-macos-arm64
+      PLATFORM="macOS ARM64"
+      EXPECTED_CODE_SIGNATURE=adhoc-snapshot
+      MACOS_VERSION=$(sw_vers -productVersion)
+      version_ge "$MACOS_VERSION" 11 || fail "macOS 11 or newer is required; found $MACOS_VERSION."
+      ;;
+    Linux:aarch64|Linux:arm64)
+      fail "Linux ARM64 is not supported and no asset is published. The existing CLI was not changed."
+      ;;
+    Darwin:x86_64)
+      fail "Intel Mac is not supported and no asset is published. The existing CLI was not changed."
+      ;;
+    MINGW*:*|MSYS*:*|CYGWIN*:*)
+      fail "Use install.ps1 on Windows."
+      ;;
+    *) fail "Unsupported platform: $OS $ARCH. The existing CLI was not changed." ;;
+  esac
+}
 
-if [ -z "$VERSION" ]; then
-  fail "could not fetch latest release version from GitHub."
-fi
+write_public_key() {
+  if [ -n "${CONTEXA_TRUSTED_PUBLIC_KEY_PATH:-}" ]; then
+    case "$DOWNLOAD_BASE" in
+      http://127.0.0.1:*|http://localhost:*|http://\[::1\]:*) ;;
+      *) fail "A test public key override is allowed only with a loopback release server." ;;
+    esac
+    [ -f "$CONTEXA_TRUSTED_PUBLIC_KEY_PATH" ] || fail "The configured test public key does not exist."
+    cp "$CONTEXA_TRUSTED_PUBLIC_KEY_PATH" "$1"
+    return
+  fi
+  cat >"$1" <<'KEY'
+-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAosHQvVy9S+AGAvskLk13
+njD9SoRHMURAbU2RQWZgQt2t0vN3Ib7aVMIwStGdJhaDIuPHTg0WrwM6ogPDDqfF
+mHHm8XkviBHnkgFQWvovLHtRudSgU6g+5ReaT0G0HsWFC3aGVJhOEwo5EqJJxZgj
+Ic533CJTyn6ZbV8C0PGPP3kZQb1C/zPCaVtQg02v3Vm1C+sivBfCFRRJlcXhfc5h
+vbtB40DcRFkJfkBbdHBwdAnRfuH8OnIeL9dWEFyNgR7ZIREnjqNahtZbUM9gBS1p
+1Zw3ffTls2QSyMvQobqwNOdfP2/LN0K8uiJJ8K7nh524wGANdTlmKY2cAAkUbZsO
+2FK7sLCcVDXShQptXFj31DEzdQCb9hAnarXK5C6qBFxloDGzV8b+xlALFQBIO8xw
+XlxR8jZq+CiVJmWHUr78A0fubstaBUSgpU1ZzdUl0plI6MczU/udM7miH/O1ih7t
+0ox745ahU/7eXEYOLNRAJs2gidol7m+apyY/qV7DIMhzAgMBAAE=
+-----END PUBLIC KEY-----
+KEY
+}
 
-OS=$(uname -s)
-ARCH=$(uname -m)
+manifest_asset_hash() {
+  awk -v file="$FILE" '
+    index($0, "\"file\": \"" file "\"") { in_asset = 1 }
+    in_asset && match($0, /"sha256": "[0-9a-fA-F]+"/) {
+      value = substr($0, RSTART, RLENGTH)
+      sub(/^"sha256": "/, "", value); sub(/"$/, "", value)
+      print tolower(value); exit
+    }
+  ' "$MANIFEST_FILE"
+}
 
-case "$OS" in
-  Linux*)
-    case "$ARCH" in
-      x86_64)  FILE="contexa-linux-x64"; PLATFORM="Linux x64" ;;
-      aarch64|arm64) FILE="contexa-linux-arm64"; PLATFORM="Linux ARM64" ;;
-      *) fail "unsupported Linux architecture: $ARCH" ;;
-    esac ;;
-  Darwin*)
-    case "$ARCH" in
-      arm64) FILE="contexa-macos-arm64"; PLATFORM="macOS ARM64 (Apple Silicon)" ;;
-      x86_64)
-        fail "Intel Mac prebuilt binary is not available yet. Build from source: https://github.com/${REPO}" ;;
-      *) fail "unsupported macOS architecture: $ARCH" ;;
-    esac ;;
-  MINGW*|MSYS*|CYGWIN*)
-    FILE="contexa-win-x64.exe"; BIN="contexa.exe"; PLATFORM="Windows x64" ;;
-  *) fail "unsupported OS: $OS" ;;
-esac
+manifest_asset_code_signature() {
+  awk -v file="$FILE" '
+    index($0, "\"file\": \"" file "\"") { in_asset = 1 }
+    in_asset && match($0, /"codeSignature": "[^"]+"/) {
+      value = substr($0, RSTART, RLENGTH)
+      sub(/^"codeSignature": "/, "", value); sub(/"$/, "", value)
+      print value; exit
+    }
+  ' "$MANIFEST_FILE"
+}
+
+reported_version() {
+  "$1" --version 2>/dev/null | awk 'NR == 1 { print; exit }'
+}
+
+smoke_binary() {
+  [ "$(reported_version "$1")" = "$2" ] || return 1
+  "$1" --help >/dev/null 2>&1 || return 1
+  "$1" >/dev/null 2>&1 || return 1
+}
+
+profile_path() {
+  if [ -n "${CONTEXA_SHELL_PROFILE:-}" ]; then printf '%s' "$CONTEXA_SHELL_PROFILE"; else printf '%s' "$HOME/.profile"; fi
+}
+
+ensure_path() {
+  case ":$PATH:" in *":$INSTALL_DIR:"*) ;; *) PATH="$INSTALL_DIR:$PATH"; export PATH ;; esac
+  hash -r 2>/dev/null || true
+  resolved=$(command -v contexa 2>/dev/null || true)
+  [ "$resolved" = "$INSTALL_PATH" ] || fail "PATH conflict: first contexa command is ${resolved:-missing}, expected $INSTALL_PATH."
+  if [ "${CONTEXA_SKIP_PATH_UPDATE:-0}" != 1 ]; then
+    PROFILE=$(profile_path)
+    if ! grep -Fq '# >>> contexa-cli installer >>>' "$PROFILE" 2>/dev/null; then
+      {
+        printf '\n%s\n' '# >>> contexa-cli installer >>>'
+        printf 'export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+        printf '%s\n' '# <<< contexa-cli installer <<<'
+      } >>"$PROFILE"
+    fi
+  fi
+  if command -v which >/dev/null 2>&1; then
+    which -a contexa 2>/dev/null | awk -v final="$INSTALL_PATH" '$0 != final { print "Warning: another contexa command remains and was not deleted: " $0 > "/dev/stderr" }'
+  fi
+}
+
+remove_profile_block() {
+  [ "${CONTEXA_SKIP_PATH_UPDATE:-0}" = 1 ] && return
+  PROFILE=$(profile_path)
+  [ -f "$PROFILE" ] || return
+  temporary="$PROFILE.contexa-remove.$$"
+  awk '
+    $0 == "# >>> contexa-cli installer >>>" { skip = 1; next }
+    $0 == "# <<< contexa-cli installer <<<" { skip = 0; next }
+    !skip { print }
+  ' "$PROFILE" >"$temporary"
+  mv "$temporary" "$PROFILE"
+}
 
 INSTALL_DIR=$(resolve_install_dir)
-INSTALL_PATH="${INSTALL_DIR}/${BIN}"
-URL="https://github.com/${REPO}/releases/download/${VERSION}/${FILE}"
-SHA_URL="${URL}.sha256"
+INSTALL_PATH="$INSTALL_DIR/contexa"
+BACKUP_PATH="$INSTALL_PATH.previous"
+ACTION="${CONTEXA_INSTALL_ACTION:-install}"
 
-printf "  Version  : %s\n" "$VERSION"
-printf "  Platform : %s\n" "$PLATFORM"
-printf "  Target   : %s\n\n" "$INSTALL_PATH"
-
-if ! mkdir -p "$INSTALL_DIR"; then
-  fail "could not create install directory: $INSTALL_DIR"
-fi
-if [ ! -w "$INSTALL_DIR" ]; then
-  fail "install directory is not writable: $INSTALL_DIR. Set CONTEXA_INSTALL_DIR to a writable directory."
-fi
-
-TMP_BIN=$(mktemp 2>/dev/null || mktemp -t contexa)
-TMP_SHA="${TMP_BIN}.sha256"
-trap 'rm -f "$TMP_BIN" "$TMP_SHA"' EXIT HUP INT TERM
-
-EXPECTED_SIZE=$(curl -fsSLI "$URL" 2>/dev/null \
-  | awk 'BEGIN{IGNORECASE=1} /^content-length:/ { gsub("\r", "", $2); print $2; exit }' || true)
-EXPECTED_HUMAN=$(fmt_bytes "$EXPECTED_SIZE")
-
-if [ -n "$EXPECTED_HUMAN" ]; then
-  info "Downloading $EXPECTED_HUMAN..."
-else
-  info "Downloading..."
-fi
-
-curl -fsSL "$URL" -o "$TMP_BIN"
-ACTUAL_SIZE=$(wc -c <"$TMP_BIN" 2>/dev/null | tr -d ' ')
-ACTUAL_HUMAN=$(fmt_bytes "$ACTUAL_SIZE")
-if [ -n "$ACTUAL_HUMAN" ]; then
-  success "Downloaded $ACTUAL_HUMAN."
-else
-  success "Downloaded successfully."
-fi
-
-info "Verifying checksum..."
-if ! curl -fsSL "$SHA_URL" -o "$TMP_SHA"; then
-  fail "checksum file not found at $SHA_URL. Refusing to install an unverified binary."
-fi
-
-EXPECTED_SHA=$(awk '{print tolower($1); exit}' "$TMP_SHA")
-if [ -z "$EXPECTED_SHA" ]; then
-  fail "checksum file is empty."
-fi
-
-if command -v sha256sum >/dev/null 2>&1; then
-  ACTUAL_SHA=$(sha256sum "$TMP_BIN" | awk '{print tolower($1)}')
-elif command -v shasum >/dev/null 2>&1; then
-  ACTUAL_SHA=$(shasum -a 256 "$TMP_BIN" | awk '{print tolower($1)}')
-else
-  fail "neither sha256sum nor shasum was found; cannot verify download."
-fi
-
-if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
-  printf "  %bexpected: %s%b\n" "$RED" "$EXPECTED_SHA" "$NC"
-  printf "  %bactual  : %s%b\n" "$RED" "$ACTUAL_SHA" "$NC"
-  fail "checksum mismatch. Refusing to install a tampered binary."
-fi
-success "Checksum verified."
-
-EXPECTED_CLI_VERSION=${VERSION#v}
-REPORTED_CLI_VERSION=$("$TMP_BIN" --version 2>/dev/null || true)
-if [ "$REPORTED_CLI_VERSION" != "$EXPECTED_CLI_VERSION" ]; then
-  fail "release tag/binary version mismatch. Tag=$VERSION, binary=${REPORTED_CLI_VERSION:-unavailable}"
-fi
-success "Version contract verified: $REPORTED_CLI_VERSION"
-
-mv "$TMP_BIN" "$INSTALL_PATH"
-chmod +x "$INSTALL_PATH"
-
-if ! "$INSTALL_PATH" --help >/dev/null 2>&1; then
-  fail "installed binary did not run successfully: $INSTALL_PATH --help"
-fi
-success "Binary smoke check passed."
-
-case ":$PATH:" in
-  *":$INSTALL_DIR:"*) ;;
-  *)
-    warn "$INSTALL_DIR is not on PATH. Add it to your shell profile to run 'contexa' from any directory."
-    printf "  export PATH=\"%s:\$PATH\"\n" "$INSTALL_DIR"
+case "$ACTION" in
+  rollback)
+    [ -f "$BACKUP_PATH" ] || fail "No previous Contexa binary exists at $BACKUP_PATH."
+    rollback_temp="$INSTALL_PATH.rollback.$$"
+    [ -f "$INSTALL_PATH" ] && mv "$INSTALL_PATH" "$rollback_temp"
+    if mv "$BACKUP_PATH" "$INSTALL_PATH" && "$INSTALL_PATH" --help >/dev/null 2>&1; then
+      [ -f "$rollback_temp" ] && mv "$rollback_temp" "$BACKUP_PATH"
+      chmod 755 "$INSTALL_PATH"; ensure_path
+      printf '%s\n' "Contexa CLI rolled back to $(reported_version "$INSTALL_PATH")."
+      exit 0
+    fi
+    [ -f "$INSTALL_PATH" ] && rm -f "$INSTALL_PATH"
+    [ -f "$rollback_temp" ] && mv "$rollback_temp" "$INSTALL_PATH"
+    fail "Rollback smoke verification failed; the pre-rollback binary was restored."
     ;;
+  uninstall)
+    rm -f "$INSTALL_PATH" "$BACKUP_PATH"
+    remove_profile_block
+    printf '%s\n' "Contexa CLI binary and installer-owned PATH entry were removed. Project files were not changed."
+    exit 0
+    ;;
+  install) ;;
+  *) fail "Unsupported CONTEXA_INSTALL_ACTION: $ACTION" ;;
 esac
 
-printf "\n"
-success "Contexa $VERSION installed!"
-printf "\n  Get started:\n"
-printf "    cd your-spring-project\n"
-printf "    contexa init\n"
-printf "    contexa reset\n"
-printf "    contexa init --simulate\n"
-printf "    contexa reset --simulate\n\n"
+require_tool curl
+require_tool awk
+require_tool openssl
+detect_platform
+mkdir -p "$INSTALL_DIR" || fail "Could not create install directory: $INSTALL_DIR."
+[ -w "$INSTALL_DIR" ] || fail "Install directory is not writable: $INSTALL_DIR."
+
+STATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/contexa-installer.XXXXXX")
+MANIFEST_FILE="$STATE_DIR/release-manifest.json"
+SIGNATURE_TEXT="$STATE_DIR/release-manifest.json.sig"
+SIGNATURE_BINARY="$STATE_DIR/release-manifest.sig.bin"
+PUBLIC_KEY="$STATE_DIR/release-signing-public.pem"
+SIDECAR_FILE="$STATE_DIR/asset.sha256"
+METADATA_FILE="$STATE_DIR/release.json"
+NEW_BINARY=$(mktemp "$INSTALL_DIR/.contexa.new.XXXXXX")
+cleanup() { rm -rf "$STATE_DIR"; rm -f "$NEW_BINARY"; }
+trap cleanup EXIT HUP INT TERM
+
+if [ -n "${CONTEXA_VERSION:-}" ]; then
+  VERSION=$CONTEXA_VERSION
+else
+  RELEASE_API="${CONTEXA_RELEASE_API_URL:-$DEFAULT_RELEASE_API}"
+  download "$RELEASE_API" "$METADATA_FILE" || fail "Could not fetch release metadata within the configured timeout."
+  VERSION=$(awk -F '"' '/"tag_name"/ { print $4; exit }' "$METADATA_FILE")
+fi
+case "$VERSION" in v[0-9A-Za-z][0-9A-Za-z._-]*) ;; *) fail "Invalid or empty release tag: $VERSION" ;; esac
+EXPECTED_VERSION=${VERSION#v}
+DOWNLOAD_BASE="${CONTEXA_RELEASE_DOWNLOAD_BASE:-$DEFAULT_DOWNLOAD_BASE}"
+RELEASE_BASE="${DOWNLOAD_BASE%/}/$VERSION"
+
+download "$RELEASE_BASE/release-manifest.json" "$MANIFEST_FILE" || fail "Could not download release-manifest.json."
+download "$RELEASE_BASE/release-manifest.json.sig" "$SIGNATURE_TEXT" || fail "Could not download release manifest signature."
+write_public_key "$PUBLIC_KEY"
+openssl base64 -d -A -in "$SIGNATURE_TEXT" -out "$SIGNATURE_BINARY" >/dev/null 2>&1 || fail "Release manifest signature is not valid base64."
+openssl dgst -sha256 -verify "$PUBLIC_KEY" -signature "$SIGNATURE_BINARY" "$MANIFEST_FILE" >/dev/null 2>&1 || fail "Release manifest signature verification failed. The existing CLI was not changed."
+
+grep -Fq "\"releaseTag\": \"$VERSION\"" "$MANIFEST_FILE" || fail "Signed manifest release tag mismatch."
+grep -Fq "\"cliVersion\": \"$EXPECTED_VERSION\"" "$MANIFEST_FILE" || fail "Signed manifest CLI version mismatch."
+grep -Fq '"required": true' "$MANIFEST_FILE" || fail "Signed manifest trust contract is missing."
+grep -Fq '"algorithm": "RSA-3072-SHA256"' "$MANIFEST_FILE" || fail "Signed manifest trust algorithm is unsupported."
+grep -Fq "\"file\": \"$FILE\"" "$MANIFEST_FILE" || fail "Signed manifest does not register $PLATFORM."
+MANIFEST_SHA=$(manifest_asset_hash)
+[ -n "$MANIFEST_SHA" ] || fail "Signed manifest does not bind a digest for $FILE."
+MANIFEST_CODE_SIGNATURE=$(manifest_asset_code_signature)
+[ "$MANIFEST_CODE_SIGNATURE" = "$EXPECTED_CODE_SIGNATURE" ] || fail "Unsupported code-signature contract for $PLATFORM: ${MANIFEST_CODE_SIGNATURE:-missing}."
+
+if [ -f "$INSTALL_PATH" ] && [ "$(reported_version "$INSTALL_PATH")" = "$EXPECTED_VERSION" ]; then
+  smoke_binary "$INSTALL_PATH" "$EXPECTED_VERSION" || fail "The installed same-version binary failed smoke verification."
+  ensure_path
+  printf '%s\n' "Contexa $VERSION is already installed; no file was replaced."
+  exit 0
+fi
+
+download "$RELEASE_BASE/$FILE" "$NEW_BINARY" || fail "Binary download failed within the configured timeout."
+download "$RELEASE_BASE/$FILE.sha256" "$SIDECAR_FILE" || fail "Checksum download failed."
+SIDECAR_SHA=$(awk '{ print tolower($1); exit }' "$SIDECAR_FILE")
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL_SHA=$(sha256sum "$NEW_BINARY" | awk '{ print tolower($1) }')
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL_SHA=$(shasum -a 256 "$NEW_BINARY" | awk '{ print tolower($1) }')
+else
+  fail "Neither sha256sum nor shasum is available."
+fi
+[ "$SIDECAR_SHA" = "$MANIFEST_SHA" ] && [ "$ACTUAL_SHA" = "$MANIFEST_SHA" ] || fail "Binary digest does not match the signed release manifest."
+
+chmod 755 "$NEW_BINARY"
+smoke_binary "$NEW_BINARY" "$EXPECTED_VERSION" || fail "Downloaded binary version, help, or first-run verification failed."
+if [ "$OS" = Darwin ]; then
+  codesign --verify "$NEW_BINARY" >/dev/null 2>&1 || fail "macOS code-signature contract verification failed."
+fi
+
+OLD_MOVED=0
+rm -f "$BACKUP_PATH"
+if [ -f "$INSTALL_PATH" ]; then mv "$INSTALL_PATH" "$BACKUP_PATH"; OLD_MOVED=1; fi
+if ! mv "$NEW_BINARY" "$INSTALL_PATH"; then
+  [ "$OLD_MOVED" = 1 ] && mv "$BACKUP_PATH" "$INSTALL_PATH"
+  fail "Atomic binary replacement failed; the previous CLI was restored."
+fi
+chmod 755 "$INSTALL_PATH"
+if ! smoke_binary "$INSTALL_PATH" "$EXPECTED_VERSION"; then
+  rm -f "$INSTALL_PATH"
+  [ "$OLD_MOVED" = 1 ] && mv "$BACKUP_PATH" "$INSTALL_PATH"
+  fail "Final smoke verification failed; the previous CLI was restored."
+fi
+
+ensure_path
+printf '%s\n' "Contexa $VERSION installed and verified for $PLATFORM."
+printf '%s\n' "Primary commands:" "  contexa init" "  contexa reset" "  contexa init --simulate" "  contexa reset --simulate"
+printf '%s\n' "Immutable reinstall: CONTEXA_VERSION=$VERSION"
+printf '%s\n' "Rollback: CONTEXA_INSTALL_ACTION=rollback"
+printf '%s\n' "Uninstall: CONTEXA_INSTALL_ACTION=uninstall (project reset is separate)"

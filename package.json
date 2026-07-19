@@ -1,0 +1,8 @@
+{
+  "name": "install-ctxa",
+  "private": true,
+  "version": "0.1.2-phase1.1",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

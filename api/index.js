@@ -8,17 +8,27 @@ const path = require('path');
 //   /install.ps1, /win, /windows, PowerShell UA -> install.ps1
 //   /install.sh, /sh, /linux, /mac, everything else -> install.sh
 module.exports = (req, res) => {
-  const url = (req.url || '/').toLowerCase();
+  const pathname = new URL(req.url || '/', 'https://install.ctxa.ai').pathname;
+  const routePath = pathname.toLowerCase();
   const ua = (req.headers['user-agent'] || '').toLowerCase();
+  const immutableMatch = pathname.match(/^\/(v[0-9a-z][0-9a-z._-]*)\/(install\.(ps1|sh))$/i);
+  if (immutableMatch) {
+    const tag = immutableMatch[1];
+    const fileName = immutableMatch[2].toLowerCase();
+    res.statusCode = 302;
+    res.setHeader('Location', `https://raw.githubusercontent.com/contexa-security/install-ctxa/${tag}/${fileName}`);
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.send('');
+    return;
+  }
 
-  const wantsPs1 =
-       url.includes('.ps1')
-    || url === '/win'
-    || url === '/windows'
-    || url.startsWith('/win?')
-    || url.startsWith('/windows?')
-    || ua.includes('powershell')
-    || ua.includes('windowspowershell');
+  const explicitPs1 = routePath === '/install.ps1';
+  const explicitSh = routePath === '/install.sh';
+  const windowsAlias = routePath === '/win' || routePath === '/windows';
+  const shellAlias = routePath === '/sh' || routePath === '/linux' || routePath === '/mac';
+  const wantsPs1 = explicitPs1
+    || (!explicitSh && !shellAlias && (windowsAlias || ua.includes('powershell') || ua.includes('windowspowershell')));
 
   const fileName = wantsPs1 ? 'install.ps1' : 'install.sh';
   const filePath = path.join(__dirname, '..', fileName);
@@ -39,7 +49,7 @@ module.exports = (req, res) => {
   // Content-Type and may treat a BOM from Invoke-RestMethod as part of the
   // first token when piping to iex.
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.send(body);
 };

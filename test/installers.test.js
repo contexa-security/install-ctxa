@@ -22,36 +22,56 @@ function assertNoReplacementOrBoxDrawing(src) {
   assert.equal(/[┌┐└┘─│]/u.test(src), false, 'installer output must stay ASCII-safe');
 }
 
-test('install.ps1 is ASCII-safe and has no unverified local fallback', () => {
+test('install.ps1 enforces the signed, bounded and atomic installation contract', () => {
   const src = read(ps1Path);
   assert.ok(src.startsWith('#Requires -Version 5.1'));
   assert.equal(src.includes('E:\\projects'), false);
   assert.equal(src.includes('localBuildPath'), false);
-  assert.equal(src.includes('Skipping checksum verification for local fallback'), false);
+  assert.equal(src.includes('docker'), false, 'installer must not block on Docker');
   assertNoReplacementOrBoxDrawing(src);
-  assert.match(src, /Invoke-WebRequest -Uri \$shaUrl/);
-  assert.match(src, /Get-FileHash -Path \$tempBin -Algorithm SHA256/);
-  assert.match(src, /Release tag\/binary version mismatch/);
-  assert.match(src, /NewGuid\(\).*'\.exe'/);
-  assert.match(src, /& \$tempBin --version/);
-  assert.match(src, /& \$FinalPath --help/);
+  assert.match(src, /HttpWebRequest/);
+  assert.match(src, /CONTEXA_HTTP_CONNECT_TIMEOUT_SEC/);
+  assert.match(src, /CONTEXA_HTTP_TOTAL_TIMEOUT_SEC/);
+  assert.match(src, /CONTEXA_HTTP_RETRIES/);
+  assert.match(src, /release-manifest\.json\.sig/);
+  assert.match(src, /VerifyData/);
+  assert.match(src, /Get-FileHash -LiteralPath \$temporaryPath -Algorithm SHA256/);
+  assert.match(src, /\.new\.exe/);
+  assert.match(src, /\[System\.IO\.File\]::Move\(\$temporaryPath, \$finalPath\)/);
+  assert.match(src, /\.previous/);
+  assert.match(src, /CONTEXA_INSTALL_ACTION/);
+  assert.match(src, /CONTEXA_TRUSTED_PUBLIC_KEY_XML/);
+  assert.match(src, /IsLoopback/);
+  assert.match(src, /Test-BinarySmoke \$temporaryPath/);
+  assert.match(src, /Ensure-CommandPath/);
+  assert.match(src, /was not deleted/);
   for (const command of ['contexa init', 'contexa reset', 'contexa init --simulate', 'contexa reset --simulate']) {
     assert.ok(src.includes(command), `missing primary command: ${command}`);
   }
 });
 
-test('install.sh is POSIX-oriented and avoids corrupted banner bytes', () => {
+test('install.sh enforces supported platforms, bounded download and atomic replacement', () => {
   const src = read(shPath);
   assert.ok(src.startsWith('#!/bin/sh'));
-  assert.equal(src.includes("H='?"), false);
   assertNoReplacementOrBoxDrawing(src);
   assert.equal(/^\s*local\s+/m.test(src), false, 'POSIX sh script must not use bash-only local declarations');
-  assert.match(src, /CONTEXA_INSTALL_DIR/);
-  assert.match(src, /HOME\/.local\/bin/);
-  assert.match(src, /checksum mismatch/);
-  assert.match(src, /release tag\/binary version mismatch/);
-  assert.match(src, /"\$TMP_BIN" --version/);
-  assert.match(src, /"\$INSTALL_PATH" --help/);
+  assert.equal(src.includes('docker'), false, 'installer must not block on Docker');
+  assert.match(src, /--connect-timeout "\$CONNECT_TIMEOUT"/);
+  assert.match(src, /--max-time "\$TOTAL_TIMEOUT"/);
+  assert.match(src, /--retry "\$RETRIES"/);
+  assert.match(src, /release-manifest\.json\.sig/);
+  assert.match(src, /openssl dgst -sha256 -verify/);
+  assert.match(src, /Linux ARM64 is not supported/);
+  assert.match(src, /Intel Mac is not supported/);
+  assert.match(src, /glibc 2\.28 or newer/);
+  assert.match(src, /\.contexa\.new\.XXXXXX/);
+  assert.match(src, /BACKUP_PATH="\$INSTALL_PATH\.previous"/);
+  assert.match(src, /CONTEXA_INSTALL_ACTION/);
+  assert.match(src, /CONTEXA_TRUSTED_PUBLIC_KEY_PATH/);
+  assert.match(src, /loopback release server/);
+  assert.match(src, /smoke_binary "\$NEW_BINARY"/);
+  assert.match(src, /MANIFEST_CODE_SIGNATURE/);
+  assert.match(src, /was not deleted/);
   for (const command of ['contexa init', 'contexa reset', 'contexa init --simulate', 'contexa reset --simulate']) {
     assert.ok(src.includes(command), `missing primary command: ${command}`);
   }
@@ -62,7 +82,7 @@ test('installer files are written without UTF-8 BOM', () => {
   assert.notDeepEqual([...firstBytes(shPath, 3)], [0xef, 0xbb, 0xbf]);
 });
 
-test('api routes PowerShell clients to install.ps1 and defaults to install.sh', () => {
+test('api prioritizes explicit paths and exposes immutable version URLs', () => {
   function invoke(url, ua = '') {
     const headers = {};
     const res = {
@@ -84,12 +104,33 @@ test('api routes PowerShell clients to install.ps1 and defaults to install.sh', 
   const uaPs = invoke('/', 'WindowsPowerShell/5.1');
   assert.ok(uaPs.body.startsWith('#Requires -Version 5.1'));
 
-  const sh = invoke('/');
+  const sh = invoke('/install.sh?source=powershell', 'WindowsPowerShell/5.1');
   assert.ok(sh.body.startsWith('#!/bin/sh'));
+  assert.equal(sh.headers['cache-control'], 'no-store');
+
+  const immutable = invoke('/v0.1.2-phase1.1/install.ps1');
+  assert.equal(immutable.statusCode, 302);
+  assert.equal(immutable.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/v0.1.2-phase1.1/install.ps1');
+  assert.equal(immutable.headers['cache-control'], 'public, max-age=31536000, immutable');
+  const caseSensitiveTag = invoke('/v0.1.2-Phase1.1/install.sh');
+  assert.equal(caseSensitiveTag.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/v0.1.2-Phase1.1/install.sh');
+
+  const originalReadFileSync = fs.readFileSync;
+  let unavailable;
+  try {
+    fs.readFileSync = () => { throw new Error('injected read failure'); };
+    unavailable = invoke('/install.sh');
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+  }
+  assert.equal(unavailable.statusCode, 503);
+  assert.equal(unavailable.headers['cache-control'], 'no-store');
+  assert.match(unavailable.body, /temporarily unavailable/);
 });
 
 test('install.sh passes sh -n when sh is available', () => {
-  const result = spawnSync('sh', ['-n', shPath], { encoding: 'utf8' });
+  const shell = process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\sh.exe' : 'sh';
+  const result = spawnSync(shell, ['-n', shPath], { encoding: 'utf8' });
   if (result.error && result.error.code === 'ENOENT') {
     return;
   }

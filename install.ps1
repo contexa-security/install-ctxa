@@ -1,280 +1,337 @@
 #Requires -Version 5.1
-<#
-.SYNOPSIS
-  Contexa CLI installer for Windows.
-
-.DESCRIPTION
-  Downloads the latest contexa-win-x64.exe release from GitHub, verifies it
-  against the published SHA-256 digest, installs it under
-  %LOCALAPPDATA%\Programs\Contexa, and adds that directory to the user PATH.
-
-.NOTES
-  Requires PowerShell 5.1 or later.
-  Run with: irm https://install.ctxa.ai/install.ps1 | iex
-#>
 
 $ErrorActionPreference = 'Stop'
-
-# PowerShell 5.x defaults to TLS 1.0 on some Windows installations.
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Set-StrictMode -Version 2
 
 $script:OriginalProgressPreference = $ProgressPreference
 $ProgressPreference = 'SilentlyContinue'
 
-function Restore-InstallerState {
+$script:Repository = 'contexa-security/contexa-cli'
+$script:DefaultReleaseApi = 'https://api.github.com/repos/contexa-security/contexa-cli/releases/latest'
+$script:DefaultDownloadBase = 'https://github.com/contexa-security/contexa-cli/releases/download'
+$script:PublicKeyXml = '<RSAKeyValue><Modulus>osHQvVy9S+AGAvskLk13njD9SoRHMURAbU2RQWZgQt2t0vN3Ib7aVMIwStGdJhaDIuPHTg0WrwM6ogPDDqfFmHHm8XkviBHnkgFQWvovLHtRudSgU6g+5ReaT0G0HsWFC3aGVJhOEwo5EqJJxZgjIc533CJTyn6ZbV8C0PGPP3kZQb1C/zPCaVtQg02v3Vm1C+sivBfCFRRJlcXhfc5hvbtB40DcRFkJfkBbdHBwdAnRfuH8OnIeL9dWEFyNgR7ZIREnjqNahtZbUM9gBS1p1Zw3ffTls2QSyMvQobqwNOdfP2/LN0K8uiJJ8K7nh524wGANdTlmKY2cAAkUbZsO2FK7sLCcVDXShQptXFj31DEzdQCb9hAnarXK5C6qBFxloDGzV8b+xlALFQBIO8xwXlxR8jZq+CiVJmWHUr78A0fubstaBUSgpU1ZzdUl0plI6MczU/udM7miH/O1ih7t0ox745ahU/7eXEYOLNRAJs2gidol7m+apyY/qV7DIMhz</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
+
+function Get-PositiveIntEnvironment {
+    param([string]$Name, [int]$DefaultValue, [int]$Maximum)
+    $raw = [Environment]::GetEnvironmentVariable($Name)
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $DefaultValue }
+    $parsed = 0
+    if (-not [int]::TryParse($raw, [ref]$parsed) -or $parsed -lt 1 -or $parsed -gt $Maximum) {
+        throw ($Name + ' must be an integer from 1 to ' + $Maximum + '.')
+    }
+    return $parsed
+}
+
+function Get-InstallDirectory {
+    if (-not [string]::IsNullOrWhiteSpace($env:CONTEXA_INSTALL_DIR)) {
+        return [System.IO.Path]::GetFullPath($env:CONTEXA_INSTALL_DIR)
+    }
+    $local = $env:LOCALAPPDATA
+    if ([string]::IsNullOrWhiteSpace($local) -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $local = Join-Path $env:USERPROFILE 'AppData\Local'
+    }
+    if ([string]::IsNullOrWhiteSpace($local)) {
+        throw 'Cannot resolve a user installation directory. Set CONTEXA_INSTALL_DIR and retry.'
+    }
+    return Join-Path $local 'Programs\Contexa'
+}
+
+function Assert-WindowsX64 {
+    if ($env:OS -ne 'Windows_NT') {
+        throw 'install.ps1 supports Windows only. Use install.sh on Linux or macOS.'
+    }
+    $architecture = $env:PROCESSOR_ARCHITEW6432
+    if ([string]::IsNullOrWhiteSpace($architecture)) { $architecture = $env:PROCESSOR_ARCHITECTURE }
+    if ($architecture -notmatch '^(AMD64|x86_64)$') {
+        throw ('Unsupported Windows architecture: ' + $architecture + '. The existing CLI was not changed.')
+    }
+}
+
+function Test-RetryableWebFailure {
+    param([System.Exception]$Error)
+    if ($Error -is [System.TimeoutException]) { return $true }
+    if ($Error -isnot [System.Net.WebException]) { return $false }
+    if ($null -eq $Error.Response) { return $true }
+    $statusCode = [int]$Error.Response.StatusCode
+    return $statusCode -ge 500 -or $statusCode -eq 408 -or $statusCode -eq 429
+}
+
+function Invoke-BoundedDownload {
+    param([string]$Uri)
+    $connectTimeout = Get-PositiveIntEnvironment 'CONTEXA_HTTP_CONNECT_TIMEOUT_SEC' 5 60
+    $totalTimeout = Get-PositiveIntEnvironment 'CONTEXA_HTTP_TOTAL_TIMEOUT_SEC' 30 300
+    $retryCount = Get-PositiveIntEnvironment 'CONTEXA_HTTP_RETRIES' 2 5
+    $deadline = [DateTime]::UtcNow.AddSeconds($totalTimeout)
+    $lastError = $null
+
+    for ($attempt = 1; $attempt -le ($retryCount + 1); $attempt++) {
+        $request = $null
+        $response = $null
+        $stream = $null
+        $memory = $null
+        try {
+            $remaining = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds)
+            if ($remaining -le 0) { throw [System.TimeoutException]::new('HTTP total timeout exceeded.') }
+            $request = [System.Net.HttpWebRequest]::Create($Uri)
+            $request.Method = 'GET'
+            $request.UserAgent = 'contexa-installer/phase1'
+            $request.Timeout = [Math]::Min($connectTimeout, $remaining) * 1000
+            $request.ReadWriteTimeout = [Math]::Min($connectTimeout, $remaining) * 1000
+            $response = $request.GetResponse()
+            $stream = $response.GetResponseStream()
+            $memory = New-Object System.IO.MemoryStream
+            $buffer = New-Object byte[] 65536
+            while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                if ([DateTime]::UtcNow -gt $deadline) {
+                    $request.Abort()
+                    throw [System.TimeoutException]::new('HTTP total timeout exceeded.')
+                }
+                $memory.Write($buffer, 0, $read)
+            }
+            return $memory.ToArray()
+        } catch {
+            $lastError = $_.Exception
+            $retryable = Test-RetryableWebFailure $lastError
+            if (-not $retryable -or $attempt -gt $retryCount -or [DateTime]::UtcNow -ge $deadline) { throw }
+            Start-Sleep -Milliseconds 250
+        } finally {
+            if ($stream) { $stream.Dispose() }
+            if ($response) { $response.Dispose() }
+            if ($memory) { $memory.Dispose() }
+        }
+    }
+    throw $lastError
+}
+
+function Convert-BytesToText {
+    param([byte[]]$Bytes)
+    return [System.Text.Encoding]::UTF8.GetString($Bytes)
+}
+
+function Get-TrustedPublicKeyXml {
+    param([string]$DownloadBase)
+    if ([string]::IsNullOrWhiteSpace($env:CONTEXA_TRUSTED_PUBLIC_KEY_XML)) {
+        return $script:PublicKeyXml
+    }
+    $uri = [Uri]$DownloadBase
+    if (-not $uri.IsLoopback) {
+        throw 'A test public key override is allowed only with a loopback release server.'
+    }
+    return $env:CONTEXA_TRUSTED_PUBLIC_KEY_XML
+}
+
+function Test-ReleaseManifestSignature {
+    param([byte[]]$ManifestBytes, [byte[]]$SignatureTextBytes, [string]$PublicKeyXml)
+    $signatureText = (Convert-BytesToText $SignatureTextBytes).Trim()
+    try { $signature = [Convert]::FromBase64String($signatureText) } catch { throw 'Release manifest signature is not valid base64.' }
+    $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
+    try {
+        $rsa.FromXmlString($PublicKeyXml)
+        $verified = $rsa.VerifyData(
+            $ManifestBytes,
+            [System.Security.Cryptography.CryptoConfig]::MapNameToOID('SHA256'),
+            $signature
+        )
+    } finally {
+        $rsa.Dispose()
+    }
+    if (-not $verified) { throw 'Release manifest signature verification failed. The existing CLI was not changed.' }
+}
+
+function Get-TargetVersion {
+    if (-not [string]::IsNullOrWhiteSpace($env:CONTEXA_VERSION)) {
+        $version = $env:CONTEXA_VERSION.Trim()
+    } else {
+        $api = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_RELEASE_API_URL)) { $script:DefaultReleaseApi } else { $env:CONTEXA_RELEASE_API_URL }
+        $metadata = Convert-BytesToText (Invoke-BoundedDownload $api) | ConvertFrom-Json
+        $version = [string]$metadata.tag_name
+    }
+    if ($version -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$') { throw ('Invalid or empty release tag: ' + $version) }
+    return $version
+}
+
+function Get-ReportedVersion {
+    param([string]$Binary)
+    $output = & $Binary --version 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ('Binary version check failed: ' + $Binary) }
+    return ($output | Select-Object -First 1).ToString().Trim()
+}
+
+function Test-BinarySmoke {
+    param([string]$Binary, [string]$ExpectedVersion)
+    if ((Get-ReportedVersion $Binary) -ne $ExpectedVersion) {
+        throw ('Binary version mismatch at ' + $Binary)
+    }
+    & $Binary --help *> $null
+    if ($LASTEXITCODE -ne 0) { throw ('Binary help check failed: ' + $Binary) }
+    & $Binary *> $null
+    if ($LASTEXITCODE -ne 0) { throw ('Binary first-run check failed: ' + $Binary) }
+}
+
+function Ensure-CommandPath {
+    param([string]$InstallDir, [string]$FinalPath)
+    $separator = [System.IO.Path]::PathSeparator
+    $entries = @($env:Path.Split($separator) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $normalized = $InstallDir.TrimEnd('\')
+    $entries = @($entries | Where-Object { $_.TrimEnd('\') -ne $normalized })
+    $env:Path = $InstallDir + $separator + ($entries -join $separator)
+
+    if ($env:CONTEXA_SKIP_PATH_UPDATE -ne '1') {
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if ($null -eq $userPath) { $userPath = '' }
+        $userEntries = @($userPath.Split(';') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $userEntries = @($userEntries | Where-Object { $_.TrimEnd('\') -ne $normalized })
+        [Environment]::SetEnvironmentVariable('Path', ($InstallDir + ';' + ($userEntries -join ';')).TrimEnd(';'), 'User')
+    }
+
+    $commands = @(Get-Command contexa -All -ErrorAction SilentlyContinue)
+    if ($commands.Count -eq 0) { throw 'Installed contexa command is not resolvable from PATH.' }
+    $firstPath = [System.IO.Path]::GetFullPath($commands[0].Source)
+    if ($firstPath -ne [System.IO.Path]::GetFullPath($FinalPath)) {
+        throw ('PATH conflict: first contexa command is ' + $firstPath + ', expected ' + $FinalPath)
+    }
+    $conflicts = @($commands | Select-Object -Skip 1 | Where-Object { $_.Source -and ([System.IO.Path]::GetFullPath($_.Source) -ne [System.IO.Path]::GetFullPath($FinalPath)) })
+    foreach ($conflict in $conflicts) {
+        Write-Warning ('Another contexa command remains on PATH and was not deleted: ' + $conflict.Source)
+    }
+}
+
+function Invoke-Rollback {
+    param([string]$FinalPath, [string]$BackupPath)
+    if (-not (Test-Path -LiteralPath $BackupPath)) { throw ('No previous Contexa binary exists at ' + $BackupPath) }
+    $rollbackTemp = $FinalPath + '.rollback-' + [guid]::NewGuid().ToString('N')
+    try {
+        if (Test-Path -LiteralPath $FinalPath) { [System.IO.File]::Move($FinalPath, $rollbackTemp) }
+        [System.IO.File]::Move($BackupPath, $FinalPath)
+        $version = Get-ReportedVersion $FinalPath
+        & $FinalPath --help *> $null
+        if ($LASTEXITCODE -ne 0) { throw 'Rolled-back binary failed smoke verification.' }
+        if (Test-Path -LiteralPath $rollbackTemp) { [System.IO.File]::Move($rollbackTemp, $BackupPath) }
+        Write-Host ('  Rolled back Contexa CLI to ' + $version) -ForegroundColor Green
+    } catch {
+        if (-not (Test-Path -LiteralPath $FinalPath) -and (Test-Path -LiteralPath $rollbackTemp)) {
+            [System.IO.File]::Move($rollbackTemp, $FinalPath)
+        }
+        throw
+    }
+}
+
+function Invoke-Uninstall {
+    param([string]$InstallDir, [string]$FinalPath, [string]$BackupPath)
+    if (Test-Path -LiteralPath $FinalPath) { Remove-Item -LiteralPath $FinalPath -Force }
+    if (Test-Path -LiteralPath $BackupPath) { Remove-Item -LiteralPath $BackupPath -Force }
+    if ($env:CONTEXA_SKIP_PATH_UPDATE -ne '1') {
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if ($null -ne $userPath) {
+            $normalized = $InstallDir.TrimEnd('\')
+            $remaining = @($userPath.Split(';') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and $_.TrimEnd('\') -ne $normalized })
+            [Environment]::SetEnvironmentVariable('Path', ($remaining -join ';'), 'User')
+        }
+    }
+    Write-Host '  Contexa CLI binary and installer-owned PATH entry were removed. Project files were not changed.' -ForegroundColor Green
+}
+
+function Invoke-ContexaInstaller {
+    Assert-WindowsX64
+    $installDir = Get-InstallDirectory
+    $finalPath = Join-Path $installDir 'contexa.exe'
+    $backupPath = $finalPath + '.previous'
+    $action = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_INSTALL_ACTION)) { 'install' } else { $env:CONTEXA_INSTALL_ACTION.Trim().ToLowerInvariant() }
+
+    if ($action -eq 'rollback') { Invoke-Rollback $finalPath $backupPath; Ensure-CommandPath $installDir $finalPath; return }
+    if ($action -eq 'uninstall') { Invoke-Uninstall $installDir $finalPath $backupPath; return }
+    if ($action -ne 'install') { throw ('Unsupported CONTEXA_INSTALL_ACTION: ' + $action) }
+
+    if (-not (Test-Path -LiteralPath $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
+    $version = Get-TargetVersion
+    $expectedCliVersion = $version.Substring(1)
+    $downloadBase = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_RELEASE_DOWNLOAD_BASE)) { $script:DefaultDownloadBase } else { $env:CONTEXA_RELEASE_DOWNLOAD_BASE.TrimEnd('/') }
+    $releaseBase = $downloadBase + '/' + $version
+
+    $manifestBytes = Invoke-BoundedDownload ($releaseBase + '/release-manifest.json')
+    $signatureBytes = Invoke-BoundedDownload ($releaseBase + '/release-manifest.json.sig')
+    Test-ReleaseManifestSignature $manifestBytes $signatureBytes (Get-TrustedPublicKeyXml $downloadBase)
+    $manifest = Convert-BytesToText $manifestBytes | ConvertFrom-Json
+    if ($manifest.releaseTag -ne $version -or $manifest.cliVersion -ne $expectedCliVersion) {
+        throw 'Signed release manifest does not match the requested tag and CLI version.'
+    }
+    if (-not $manifest.signature.required -or $manifest.signature.algorithm -ne 'RSA-3072-SHA256') {
+        throw 'Signed release manifest trust contract is missing or unsupported.'
+    }
+    $asset = @($manifest.assets | Where-Object { $_.os -eq 'windows' -and $_.arch -eq 'x64' }) | Select-Object -First 1
+    if ($null -eq $asset -or $asset.file -ne 'contexa-win-x64.exe' -or [string]::IsNullOrWhiteSpace($asset.sha256)) {
+        throw 'Signed release manifest does not register a Windows x64 asset digest.'
+    }
+
+    if (Test-Path -LiteralPath $finalPath) {
+        $installedVersion = Get-ReportedVersion $finalPath
+        if ($installedVersion -eq $expectedCliVersion) {
+            Test-BinarySmoke $finalPath $expectedCliVersion
+            Ensure-CommandPath $installDir $finalPath
+            Write-Host ('  Contexa ' + $version + ' is already installed; no file was replaced.') -ForegroundColor Green
+            return
+        }
+    }
+
+    $temporaryPath = Join-Path $installDir ('.contexa-' + [guid]::NewGuid().ToString('N') + '.new.exe')
+    $oldMoved = $false
+    try {
+        $binaryBytes = Invoke-BoundedDownload ($releaseBase + '/' + $asset.file)
+        [System.IO.File]::WriteAllBytes($temporaryPath, $binaryBytes)
+        $sidecarText = (Convert-BytesToText (Invoke-BoundedDownload ($releaseBase + '/' + $asset.checksumFile))).Trim()
+        $sidecarHash = $sidecarText.Split()[0].ToLowerInvariant()
+        $manifestHash = ([string]$asset.sha256).ToLowerInvariant()
+        $actualHash = (Get-FileHash -LiteralPath $temporaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($sidecarHash -ne $manifestHash -or $actualHash -ne $manifestHash) {
+            throw 'Binary digest does not match the signed release manifest. The existing CLI was not changed.'
+        }
+        if ($asset.codeSignature -ne 'unsigned-snapshot') {
+            throw ('Unsupported Windows code-signature contract: ' + $asset.codeSignature)
+        }
+        $signatureStatus = (Get-AuthenticodeSignature $temporaryPath).Status.ToString()
+        if ($signatureStatus -ne 'NotSigned') { throw ('Windows code-signature contract mismatch: ' + $signatureStatus) }
+        Test-BinarySmoke $temporaryPath $expectedCliVersion
+
+        if (Test-Path -LiteralPath $backupPath) { Remove-Item -LiteralPath $backupPath -Force }
+        if (Test-Path -LiteralPath $finalPath) {
+            [System.IO.File]::Move($finalPath, $backupPath)
+            $oldMoved = $true
+        }
+        [System.IO.File]::Move($temporaryPath, $finalPath)
+        try {
+            Test-BinarySmoke $finalPath $expectedCliVersion
+        } catch {
+            if (Test-Path -LiteralPath $finalPath) { Remove-Item -LiteralPath $finalPath -Force }
+            if ($oldMoved -and (Test-Path -LiteralPath $backupPath)) { [System.IO.File]::Move($backupPath, $finalPath) }
+            throw ('Final binary smoke failed; previous CLI was restored. ' + $_.Exception.Message)
+        }
+        Ensure-CommandPath $installDir $finalPath
+        Write-Host ('  Contexa ' + $version + ' installed and verified.') -ForegroundColor Green
+        Write-Host '  Primary commands:'
+        Write-Host '    contexa init'
+        Write-Host '    contexa reset'
+        Write-Host '    contexa init --simulate'
+        Write-Host '    contexa reset --simulate'
+        Write-Host ('  Immutable reinstall: set CONTEXA_VERSION=' + $version + ' and run this installer again.')
+        Write-Host '  Rollback: set CONTEXA_INSTALL_ACTION=rollback and run this installer.'
+        Write-Host '  Uninstall: set CONTEXA_INSTALL_ACTION=uninstall and run this installer. Project reset is separate.'
+    } catch {
+        if ($oldMoved -and -not (Test-Path -LiteralPath $finalPath) -and (Test-Path -LiteralPath $backupPath)) {
+            [System.IO.File]::Move($backupPath, $finalPath)
+        }
+        throw
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+try {
+    Invoke-ContexaInstaller
+    exit 0
+} catch {
+    [Console]::Error.WriteLine('Contexa installer failed: ' + $_.Exception.Message)
+    [Console]::Error.WriteLine('The existing CLI was preserved when possible. Fix the reported cause and run the same command again.')
+    exit 1
+} finally {
     $ProgressPreference = $script:OriginalProgressPreference
 }
-
-function Format-Bytes {
-    param([long]$Bytes)
-    if ($Bytes -lt 1KB) { return "$Bytes B" }
-    if ($Bytes -lt 1MB) { return ('{0:N1} KB' -f ($Bytes / 1KB)) }
-    if ($Bytes -lt 1GB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
-    return ('{0:N2} GB' -f ($Bytes / 1GB))
-}
-
-function Write-Banner {
-    Write-Host ''
-    Write-Host '  ===============================================' -ForegroundColor Cyan
-    Write-Host '   Contexa CLI Installer' -ForegroundColor Cyan
-    Write-Host '   AI-Native Zero Trust Security Platform' -ForegroundColor Yellow
-    Write-Host '   https://ctxa.ai' -ForegroundColor DarkGray
-    Write-Host '  ===============================================' -ForegroundColor Cyan
-    Write-Host ''
-}
-
-function Test-Java17 {
-    if (-not (Get-Command java -ErrorAction SilentlyContinue)) {
-        Write-Host '  ! Java was not found. CLI installation can continue, but Contexa projects require JDK 17+.' -ForegroundColor Yellow
-        return
-    }
-
-    try {
-        $javaLines = cmd /c "java -version 2>&1"
-        foreach ($line in $javaLines) {
-            $lineStr = $line.ToString()
-            if ($lineStr -match 'version "([^"]+)"' -or $lineStr -match 'openjdk version "([^"]+)"') {
-                $fullVer = $Matches[1]
-                $major = $null
-                if ($fullVer -match '^1\.([0-9]+)') {
-                    $major = [int]$Matches[1]
-                } elseif ($fullVer -match '^([0-9]+)') {
-                    $major = [int]$Matches[1]
-                }
-                if ($major -ge 17) {
-                    Write-Host '  Java check: JDK 17+ detected.' -ForegroundColor Green
-                } else {
-                    Write-Host "  ! Java 17+ was not detected (detected: $fullVer)." -ForegroundColor Yellow
-                }
-                return
-            }
-        }
-        Write-Host '  ! Could not determine Java version. Contexa projects require JDK 17+.' -ForegroundColor Yellow
-    } catch {
-        Write-Host '  ! Java version check failed. Contexa projects require JDK 17+.' -ForegroundColor Yellow
-    }
-}
-
-function Test-DockerOptional {
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        Write-Host '  ! Docker CLI was not found. Basic CLI install is OK; local infra commands will need Docker.' -ForegroundColor Yellow
-        return
-    }
-
-    try {
-        & docker ps > $null 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host '  Docker check: daemon is running.' -ForegroundColor Green
-        } else {
-            Write-Host '  ! Docker daemon is not running. Basic CLI install is OK; local infra commands will need it.' -ForegroundColor Yellow
-        }
-    } catch {
-        Write-Host '  ! Docker check failed. Basic CLI install is OK; local infra commands will need Docker.' -ForegroundColor Yellow
-    }
-}
-
-$Repo       = 'contexa-security/contexa-cli'
-$BinaryName = 'contexa-win-x64.exe'
-
-$LocalAppData = $env:LOCALAPPDATA
-if ([string]::IsNullOrWhiteSpace($LocalAppData) -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-    $LocalAppData = Join-Path $env:USERPROFILE 'AppData\Local'
-}
-if ([string]::IsNullOrWhiteSpace($LocalAppData)) {
-    Write-Host '  Error: cannot resolve a writable installation directory.' -ForegroundColor Red
-    Write-Host '         Both LOCALAPPDATA and USERPROFILE are empty.' -ForegroundColor Red
-    Restore-InstallerState
-    return
-}
-
-$InstallDir = if (-not [string]::IsNullOrWhiteSpace($env:CONTEXA_INSTALL_DIR)) {
-    $env:CONTEXA_INSTALL_DIR
-} else {
-    Join-Path $LocalAppData 'Programs\Contexa'
-}
-$FinalPath = Join-Path $InstallDir 'contexa.exe'
-
-Write-Banner
-Write-Host '  Running environment checks...' -ForegroundColor DarkGray
-Test-Java17
-Test-DockerOptional
-Write-Host ''
-
-$version = $null
-try {
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing
-    if ($release -and $release.tag_name) {
-        $version = $release.tag_name
-    }
-} catch {
-    Write-Host '  Error: could not fetch latest release info from GitHub.' -ForegroundColor Red
-    Write-Host "         $_" -ForegroundColor Red
-    Restore-InstallerState
-    return
-}
-
-if ([string]::IsNullOrWhiteSpace($version)) {
-    Write-Host '  Error: empty version tag from GitHub API.' -ForegroundColor Red
-    Restore-InstallerState
-    return
-}
-
-$downloadUrl = "https://github.com/$Repo/releases/download/$version/$BinaryName"
-$shaUrl      = "$downloadUrl.sha256"
-
-Write-Host "  Version  : $version"      -ForegroundColor White
-Write-Host '  Platform : Windows x64'   -ForegroundColor White
-Write-Host "  Target   : $FinalPath"    -ForegroundColor DarkGray
-Write-Host ''
-
-if (-not (Test-Path $InstallDir)) {
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-}
-
-$tempBin = Join-Path ([System.IO.Path]::GetTempPath()) ("contexa-" + [guid]::NewGuid().ToString('N') + '.exe')
-$tempSha = "$tempBin.sha256"
-
-try {
-    $expectedSize = $null
-    try {
-        $headResp = Invoke-WebRequest -Uri $downloadUrl -Method Head -UseBasicParsing -ErrorAction Stop
-        if ($headResp.Headers.'Content-Length') {
-            $expectedSize = [long]$headResp.Headers.'Content-Length'
-        }
-    } catch { }
-
-    if ($expectedSize) {
-        Write-Host ("  Downloading {0}..." -f (Format-Bytes $expectedSize)) -ForegroundColor DarkGray
-    } else {
-        Write-Host '  Downloading...' -ForegroundColor DarkGray
-    }
-
-    try {
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $tempBin -UseBasicParsing -ErrorAction Stop
-    } catch {
-        Write-Host '  Error: GitHub binary download failed.' -ForegroundColor Red
-        Write-Host "         $downloadUrl" -ForegroundColor Red
-        Write-Host "         $_" -ForegroundColor Red
-        return
-    }
-
-    $actualSize = (Get-Item $tempBin).Length
-    Write-Host ("  Downloaded {0}." -f (Format-Bytes $actualSize)) -ForegroundColor Green
-
-    Write-Host '  Verifying checksum...' -ForegroundColor DarkGray
-    try {
-        Invoke-WebRequest -Uri $shaUrl -OutFile $tempSha -UseBasicParsing -ErrorAction Stop
-    } catch {
-        Write-Host "  Error: checksum file not found at $shaUrl" -ForegroundColor Red
-        Write-Host '  Refusing to install an unverified binary.' -ForegroundColor Red
-        return
-    }
-
-    $expected = (Get-Content $tempSha -Raw).Trim().Split()[0]
-    if ([string]::IsNullOrWhiteSpace($expected)) {
-        Write-Host '  Error: empty checksum file.' -ForegroundColor Red
-        return
-    }
-
-    $actual = (Get-FileHash -Path $tempBin -Algorithm SHA256).Hash.ToLower()
-    if ($expected.ToLower() -ne $actual) {
-        Write-Host '  Error: checksum mismatch.' -ForegroundColor Red
-        Write-Host "    expected: $expected" -ForegroundColor Red
-        Write-Host "    actual  : $actual"   -ForegroundColor Red
-        Write-Host '  Refusing to install a tampered binary.' -ForegroundColor Red
-        return
-    }
-    Write-Host '  Checksum verified.' -ForegroundColor Green
-
-    $expectedCliVersion = [regex]::Replace($version, '^[vV]', '')
-    try {
-        $reportedCliVersion = (& $tempBin --version 2>&1 | Select-Object -First 1).ToString().Trim()
-    } catch {
-        throw "Downloaded binary version check failed: $_"
-    }
-    if ($reportedCliVersion -ne $expectedCliVersion) {
-        throw "Release tag/binary version mismatch. Tag=$version, binary=$reportedCliVersion"
-    }
-    Write-Host "  Version contract verified: $reportedCliVersion" -ForegroundColor Green
-
-    try {
-        Move-Item -Force -Path $tempBin -Destination $FinalPath
-    } catch [System.IO.IOException] {
-        Write-Host ''
-        Write-Host "  Error: could not write $FinalPath" -ForegroundColor Red
-        Write-Host '         The existing contexa.exe may be in use by another process.' -ForegroundColor Red
-        Write-Host '         Close any running contexa session and re-run this installer.' -ForegroundColor Red
-        return
-    }
-
-    try {
-        & $FinalPath --help > $null 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "contexa --help exited with $LASTEXITCODE" }
-        Write-Host '  Binary smoke check passed.' -ForegroundColor Green
-    } catch {
-        Write-Host '  Error: installed binary did not run successfully.' -ForegroundColor Red
-        Write-Host "         $_" -ForegroundColor Red
-        return
-    }
-} finally {
-    if (Test-Path $tempBin) { Remove-Item -Force $tempBin -ErrorAction SilentlyContinue }
-    if (Test-Path $tempSha) { Remove-Item -Force $tempSha -ErrorAction SilentlyContinue }
-    Restore-InstallerState
-}
-
-$LegacyBinPath = if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { $null } else { Join-Path $env:USERPROFILE '.local\bin\contexa.exe' }
-if ($LegacyBinPath -and (Test-Path $LegacyBinPath)) {
-    try {
-        Remove-Item -Force $LegacyBinPath -ErrorAction Stop
-        Write-Host "  Cleaned up legacy duplicate contexa binary at $LegacyBinPath." -ForegroundColor Green
-    } catch {
-        Write-Host "  Warning: legacy duplicate contexa binary found at $LegacyBinPath but could not be removed." -ForegroundColor Yellow
-        Write-Host '           Please delete it manually to avoid PATH conflicts.' -ForegroundColor Yellow
-    }
-}
-
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ([string]::IsNullOrEmpty($userPath)) { $userPath = '' }
-
-$normalizedTarget = $InstallDir.TrimEnd('\')
-$pathEntries = $userPath.Split(';') | Where-Object { $_ -ne '' }
-$alreadyOnPath = @($pathEntries | ForEach-Object { $_.TrimEnd('\') }) -contains $normalizedTarget
-
-if (-not $alreadyOnPath) {
-    $newPath = if ($userPath.EndsWith(';') -or $userPath -eq '') { "$userPath$InstallDir" } else { "$userPath;$InstallDir" }
-    [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-    Write-Host ''
-    Write-Host "  Added $InstallDir to user PATH." -ForegroundColor Green
-    Write-Host '  Open a new terminal for the change to take effect.' -ForegroundColor DarkGray
-}
-
-Write-Host ''
-Write-Host "  Contexa $version installed!" -ForegroundColor Green
-Write-Host ''
-Write-Host '  Get started:' -ForegroundColor White
-Write-Host '    cd your-spring-project' -ForegroundColor Cyan
-Write-Host '    contexa init'                 -ForegroundColor Cyan
-Write-Host '    contexa reset'                -ForegroundColor Cyan
-Write-Host '    contexa init --simulate'      -ForegroundColor Cyan
-Write-Host '    contexa reset --simulate'     -ForegroundColor Cyan
-Write-Host ''
