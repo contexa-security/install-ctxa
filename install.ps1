@@ -93,6 +93,10 @@ function Get-WebFailureReason {
     $failure = Get-TransportFailure $Error
     if ($failure -is [System.TimeoutException]) { return 'TIMEOUT' }
     if ($failure -is [System.Net.WebException]) {
+        if ($null -eq $failure.Response) {
+            if ($failure.Status -eq [System.Net.WebExceptionStatus]::Timeout) { return 'TIMEOUT' }
+            return 'CONNECTION_RESET'
+        }
         if ($null -ne $failure.Response) {
             $statusCode = [int]$failure.Response.StatusCode
             if ($statusCode -eq 429) { return 'HTTP_429_RATE_LIMIT' }
@@ -100,7 +104,6 @@ function Get-WebFailureReason {
             if ($statusCode -ge 500) { return 'HTTP_5XX' }
             return ('HTTP_' + $statusCode)
         }
-        if ($failure.Status -eq [System.Net.WebExceptionStatus]::Timeout) { return 'TIMEOUT' }
         if ($failure.Status -eq [System.Net.WebExceptionStatus]::ConnectionClosed -or
             $failure.Status -eq [System.Net.WebExceptionStatus]::ReceiveFailure -or
             $failure.Status -eq [System.Net.WebExceptionStatus]::SendFailure -or
