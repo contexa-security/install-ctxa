@@ -580,7 +580,8 @@ test('POSIX installer completes a signed Linux x64 installation against a fake r
   });
 });
 
-test('POSIX installer recovers every persisted replacement state without deleting the legacy binary', { timeout: 30000 }, async (t) => {
+test('POSIX installer recovers every persisted replacement state without deleting the legacy binary',
+  { skip: process.platform === 'win32', timeout: 30000 }, async (t) => {
   if (!fs.existsSync(gitSh)) return;
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-recovery-posix-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
@@ -633,7 +634,8 @@ test('POSIX installer recovers every persisted replacement state without deletin
   }
 });
 
-test('POSIX installer performs lifecycle and preserves the existing binary for the full fault matrix', { timeout: 60000 }, async (t) => {
+test('POSIX installer performs lifecycle and preserves the existing binary for the full fault matrix',
+  { skip: process.platform === 'win32', timeout: 60000 }, async (t) => {
   if (!fs.existsSync(gitSh)) return;
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-posix-matrix-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
