@@ -55,6 +55,15 @@ jobs:
         run: >-
           node -e "const f=require('fs'),c=require('child_process');const r=c.spawnSync(process.execPath,['--test','test/installer-runtime.test.js'],{encoding:'utf8',windowsHide:true});const out=(r.stdout||'')+(r.stderr||'');f.writeFileSync('installer-runtime.tap',out);process.stdout.write(out);process.exit(r.status===null?1:r.status)"
 
+      - name: Run the full installer fault matrix with PowerShell 7
+        if: runner.os == 'Windows'
+        env:
+          CONTEXA_TEST_POWERSHELL: pwsh.exe
+        run: node --test test/installer-runtime.test.js
+
+      - name: Run installer source and release-contract acceptance
+        run: node --test test/installers.test.js
+
       - name: Publish installer test failure detail
         if: failure()
         shell: bash
@@ -132,6 +141,9 @@ jobs:
           "$CONTEXA_INSTALL_DIR/contexa" init --yes --dir "$fixture"
           "$CONTEXA_INSTALL_DIR/contexa" reset --yes --dir "$fixture"
           test ! -f "$fixture/contexa/manifest.json"
+          CONTEXA_INSTALL_ACTION=uninstall sh ./install.sh
+          test ! -e "$CONTEXA_INSTALL_DIR/contexa"
+          test ! -e "$CONTEXA_INSTALL_DIR/contexa.previous"
 
       - name: Verify actual install, update, no-op, rollback and init/reset (Windows)
         if: runner.os == 'Windows'
@@ -174,3 +186,7 @@ jobs:
           & $binary init --yes --dir $fixture
           & $binary reset --yes --dir $fixture
           if (Test-Path -LiteralPath (Join-Path $fixture 'contexa\manifest.json')) { throw 'reset left manifest behind' }
+          $env:CONTEXA_INSTALL_ACTION = 'uninstall'
+          & .\install.ps1
+          if (Test-Path -LiteralPath $binary) { throw 'uninstall left the final binary behind' }
+          if (Test-Path -LiteralPath ($binary + '.previous')) { throw 'uninstall left the previous binary behind' }

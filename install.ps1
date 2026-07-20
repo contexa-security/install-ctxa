@@ -68,13 +68,47 @@ function Assert-WindowsX64 {
     }
 }
 
+function Get-TransportFailure {
+    param([System.Exception]$Error)
+    $current = $Error
+    while ($null -ne $current) {
+        if ($current -is [System.TimeoutException] -or $current -is [System.Net.WebException]) { return $current }
+        $current = $current.InnerException
+    }
+    return $Error
+}
+
 function Test-RetryableWebFailure {
     param([System.Exception]$Error)
-    if ($Error -is [System.TimeoutException]) { return $true }
-    if ($Error -isnot [System.Net.WebException]) { return $false }
-    if ($null -eq $Error.Response) { return $true }
-    $statusCode = [int]$Error.Response.StatusCode
+    $failure = Get-TransportFailure $Error
+    if ($failure -is [System.TimeoutException]) { return $true }
+    if ($failure -isnot [System.Net.WebException]) { return $false }
+    if ($null -eq $failure.Response) { return $true }
+    $statusCode = [int]$failure.Response.StatusCode
     return $statusCode -ge 500 -or $statusCode -eq 408 -or $statusCode -eq 429
+}
+
+function Get-WebFailureReason {
+    param([System.Exception]$Error)
+    $failure = Get-TransportFailure $Error
+    if ($failure -is [System.TimeoutException]) { return 'TIMEOUT' }
+    if ($failure -is [System.Net.WebException]) {
+        if ($null -ne $failure.Response) {
+            $statusCode = [int]$failure.Response.StatusCode
+            if ($statusCode -eq 429) { return 'HTTP_429_RATE_LIMIT' }
+            if ($statusCode -eq 408) { return 'HTTP_408_TIMEOUT' }
+            if ($statusCode -ge 500) { return 'HTTP_5XX' }
+            return ('HTTP_' + $statusCode)
+        }
+        if ($failure.Status -eq [System.Net.WebExceptionStatus]::Timeout) { return 'TIMEOUT' }
+        if ($failure.Status -eq [System.Net.WebExceptionStatus]::ConnectionClosed -or
+            $failure.Status -eq [System.Net.WebExceptionStatus]::ReceiveFailure -or
+            $failure.Status -eq [System.Net.WebExceptionStatus]::SendFailure -or
+            $failure.Status -eq [System.Net.WebExceptionStatus]::ConnectFailure) {
+            return 'CONNECTION_RESET'
+        }
+    }
+    return 'NON_RETRYABLE'
 }
 
 function Invoke-BoundedDownload {
@@ -96,6 +130,8 @@ function Invoke-BoundedDownload {
             $request = [System.Net.HttpWebRequest]::Create($Uri)
             $request.Method = 'GET'
             $request.UserAgent = 'contexa-installer/phase1'
+            $request.KeepAlive = $false
+            $request.Pipelined = $false
             $request.Timeout = [Math]::Min($connectTimeout, $remaining) * 1000
             $request.ReadWriteTimeout = [Math]::Min($connectTimeout, $remaining) * 1000
             $response = $request.GetResponse()
@@ -113,7 +149,19 @@ function Invoke-BoundedDownload {
         } catch {
             $lastError = $_.Exception
             $retryable = Test-RetryableWebFailure $lastError
-            if (-not $retryable -or $attempt -gt $retryCount -or [DateTime]::UtcNow -ge $deadline) { throw }
+            if (-not $retryable -or $attempt -gt $retryCount -or [DateTime]::UtcNow -ge $deadline) {
+                $reason = Get-WebFailureReason $lastError
+                $guidance = if ($reason -eq 'HTTP_429_RATE_LIMIT') {
+                    'The signed channel was rate-limited. Retry the same installer after the server retry window.'
+                } elseif ($retryable) {
+                    'The remote endpoint was temporarily unavailable. Retry the same installer.'
+                } else {
+                    'Check the URL and trust configuration before retrying the same installer.'
+                }
+                $message = 'HTTP download failed [' + $reason + '] after ' + $attempt +
+                    ' attempt(s) within ' + $totalTimeout + ' second(s): ' + $Uri + '. ' + $guidance
+                throw [System.IO.IOException]::new($message, $lastError)
+            }
             Start-Sleep -Milliseconds 250
         } finally {
             if ($stream) { $stream.Dispose() }
@@ -121,7 +169,8 @@ function Invoke-BoundedDownload {
             if ($memory) { $memory.Dispose() }
         }
     }
-    throw $lastError
+    $reason = Get-WebFailureReason $lastError
+    throw [System.IO.IOException]::new(('HTTP download failed [' + $reason + ']: ' + $Uri), $lastError)
 }
 
 function Convert-BytesToText {
@@ -261,6 +310,134 @@ function Test-BinarySmoke {
     if ($LASTEXITCODE -ne 0) { throw ('Binary first-run check failed: ' + $Binary) }
 }
 
+function Test-BinaryHealthy {
+    param([string]$Binary, [string]$ExpectedVersion = '')
+    if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) { return $false }
+    try {
+        $version = Get-ReportedVersion $Binary
+        if ([string]::IsNullOrWhiteSpace($version)) { return $false }
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedVersion) -and $version -ne $ExpectedVersion) { return $false }
+        & $Binary --help *> $null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        & $Binary *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function Write-InstallerTransaction {
+    param(
+        [string]$MarkerPath,
+        [string]$State,
+        [string]$FinalPath,
+        [string]$BackupPath,
+        [string]$NewPath,
+        [string]$ExpectedVersion,
+        [bool]$HadOriginal
+    )
+    $validStates = @('DOWNLOADED', 'VERIFIED', 'OLD_MOVED', 'NEW_MOVED', 'SMOKE_PASSED')
+    if ($validStates -notcontains $State) { throw ('Unsupported installer transaction state: ' + $State) }
+    $transaction = [ordered]@{
+        schemaVersion = 1
+        state = $State
+        finalPath = [System.IO.Path]::GetFullPath($FinalPath)
+        backupPath = [System.IO.Path]::GetFullPath($BackupPath)
+        newPath = [System.IO.Path]::GetFullPath($NewPath)
+        expectedVersion = $ExpectedVersion
+        hadOriginal = $HadOriginal
+        updatedAt = [DateTime]::UtcNow.ToString('o')
+    }
+    $writingPath = $MarkerPath + '.writing'
+    $replacedPath = $MarkerPath + '.replaced'
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($writingPath, ($transaction | ConvertTo-Json -Compress), $utf8)
+    if (Test-Path -LiteralPath $MarkerPath) {
+        if (Test-Path -LiteralPath $replacedPath) { Remove-Item -LiteralPath $replacedPath -Force }
+        [System.IO.File]::Replace($writingPath, $MarkerPath, $replacedPath)
+        if (Test-Path -LiteralPath $replacedPath) { Remove-Item -LiteralPath $replacedPath -Force }
+    } else {
+        [System.IO.File]::Move($writingPath, $MarkerPath)
+    }
+}
+
+function Remove-InstallerTransaction {
+    param([string]$MarkerPath)
+    if (Test-Path -LiteralPath $MarkerPath) { Remove-Item -LiteralPath $MarkerPath -Force }
+    $writingPath = $MarkerPath + '.writing'
+    if (Test-Path -LiteralPath $writingPath) { Remove-Item -LiteralPath $writingPath -Force }
+    $replacedPath = $MarkerPath + '.replaced'
+    if (Test-Path -LiteralPath $replacedPath) { Remove-Item -LiteralPath $replacedPath -Force }
+}
+
+function Invoke-InstallerTransactionRecovery {
+    param([string]$InstallDir, [string]$FinalPath, [string]$BackupPath, [string]$MarkerPath)
+    $writingPath = $MarkerPath + '.writing'
+    $replacedPath = $MarkerPath + '.replaced'
+    if (-not (Test-Path -LiteralPath $MarkerPath) -and (Test-Path -LiteralPath $replacedPath)) {
+        [System.IO.File]::Move($replacedPath, $MarkerPath)
+    }
+    if (-not (Test-Path -LiteralPath $MarkerPath)) {
+        if (Test-Path -LiteralPath $writingPath) { Remove-Item -LiteralPath $writingPath -Force }
+        return
+    }
+
+    try {
+        $transaction = Get-Content -LiteralPath $MarkerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        throw ('Installer transaction marker is unreadable and was retained: ' + $MarkerPath)
+    }
+    $validStates = @('DOWNLOADED', 'VERIFIED', 'OLD_MOVED', 'NEW_MOVED', 'SMOKE_PASSED')
+    $expectedFinal = [System.IO.Path]::GetFullPath($FinalPath)
+    $expectedBackup = [System.IO.Path]::GetFullPath($BackupPath)
+    $recordedFinal = [System.IO.Path]::GetFullPath([string]$transaction.finalPath)
+    $recordedBackup = [System.IO.Path]::GetFullPath([string]$transaction.backupPath)
+    $newPath = [System.IO.Path]::GetFullPath([string]$transaction.newPath)
+    $rootPrefix = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\') + '\'
+    $newName = [System.IO.Path]::GetFileName($newPath)
+    if ($transaction.schemaVersion -ne 1 -or $validStates -notcontains [string]$transaction.state -or
+        -not $recordedFinal.Equals($expectedFinal, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $recordedBackup.Equals($expectedBackup, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $newPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $newName -notmatch '^\.contexa-[0-9a-f]{32}\.new\.exe$' -or
+        [string]::IsNullOrWhiteSpace([string]$transaction.expectedVersion)) {
+        throw ('Installer transaction marker violates the exact path/state contract and was retained: ' + $MarkerPath)
+    }
+
+    $state = [string]$transaction.state
+    $expectedVersion = [string]$transaction.expectedVersion
+    if (Test-BinaryHealthy $FinalPath) {
+        if (Test-Path -LiteralPath $newPath) { Remove-Item -LiteralPath $newPath -Force }
+        Remove-InstallerTransaction $MarkerPath
+        return
+    }
+
+    $newWasVerified = @('VERIFIED', 'OLD_MOVED') -contains $state
+    if ($newWasVerified -and (Test-BinaryHealthy $newPath $expectedVersion)) {
+        if (Test-Path -LiteralPath $FinalPath) {
+            $quarantine = $FinalPath + '.failed-' + [guid]::NewGuid().ToString('N')
+            [System.IO.File]::Move($FinalPath, $quarantine)
+        }
+        [System.IO.File]::Move($newPath, $FinalPath)
+        Test-BinarySmoke $FinalPath $expectedVersion
+        Remove-InstallerTransaction $MarkerPath
+        return
+    }
+
+    if (Test-BinaryHealthy $BackupPath) {
+        if (Test-Path -LiteralPath $FinalPath) {
+            $quarantine = $FinalPath + '.failed-' + [guid]::NewGuid().ToString('N')
+            [System.IO.File]::Move($FinalPath, $quarantine)
+        }
+        [System.IO.File]::Move($BackupPath, $FinalPath)
+        if (Test-Path -LiteralPath $newPath) { Remove-Item -LiteralPath $newPath -Force }
+        Remove-InstallerTransaction $MarkerPath
+        return
+    }
+
+    throw ('Installer recovery found no verified healthy old or new binary. The marker and files were retained: ' + $MarkerPath)
+}
+
 function Ensure-CommandPath {
     param([string]$InstallDir, [string]$FinalPath)
     $separator = [System.IO.Path]::PathSeparator
@@ -329,15 +506,17 @@ function Invoke-ContexaInstaller {
     $installDir = Get-InstallDirectory
     $finalPath = Join-Path $installDir 'contexa.exe'
     $backupPath = $finalPath + '.previous'
+    $markerPath = $finalPath + '.install-transaction.json'
     $action = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_INSTALL_ACTION)) { 'install' } else { $env:CONTEXA_INSTALL_ACTION.Trim().ToLowerInvariant() }
 
+    if (-not (Test-Path -LiteralPath $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
+    Invoke-InstallerTransactionRecovery $installDir $finalPath $backupPath $markerPath
     if ($action -eq 'rollback') { Invoke-Rollback $finalPath $backupPath; Ensure-CommandPath $installDir $finalPath; return }
     if ($action -eq 'uninstall') { Invoke-Uninstall $installDir $finalPath $backupPath; return }
     if ($action -ne 'install') {
         throw ((Select-InstallerText 'Unsupported CONTEXA_INSTALL_ACTION' '7KeA7JuQ7ZWY7KeAIOyViuuKlCBDT05URVhBX0lOU1RBTExfQUNUSU9O') + ': ' + $action)
     }
 
-    if (-not (Test-Path -LiteralPath $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
     $downloadBase = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_RELEASE_DOWNLOAD_BASE)) { $script:DefaultDownloadBase } else { $env:CONTEXA_RELEASE_DOWNLOAD_BASE.TrimEnd('/') }
     $targetRelease = Get-TargetRelease $downloadBase
     $version = $targetRelease.ReleaseTag
@@ -377,9 +556,12 @@ function Invoke-ContexaInstaller {
 
     $temporaryPath = Join-Path $installDir ('.contexa-' + [guid]::NewGuid().ToString('N') + '.new.exe')
     $oldMoved = $false
+    $hadOriginal = Test-Path -LiteralPath $finalPath -PathType Leaf
+    $replacementStarted = $false
     try {
         $binaryBytes = Invoke-BoundedDownload ($releaseBase + '/' + $asset.file)
         [System.IO.File]::WriteAllBytes($temporaryPath, $binaryBytes)
+        Write-InstallerTransaction $markerPath 'DOWNLOADED' $finalPath $backupPath $temporaryPath $expectedCliVersion $hadOriginal
         $sidecarText = (Convert-BytesToText (Invoke-BoundedDownload ($releaseBase + '/' + $asset.checksumFile))).Trim()
         $sidecarHash = $sidecarText.Split()[0].ToLowerInvariant()
         $manifestHash = ([string]$asset.sha256).ToLowerInvariant()
@@ -392,13 +574,17 @@ function Invoke-ContexaInstaller {
         }
         Assert-UnsignedAuthenticodeFile $temporaryPath
         Test-BinarySmoke $temporaryPath $expectedCliVersion
+        Write-InstallerTransaction $markerPath 'VERIFIED' $finalPath $backupPath $temporaryPath $expectedCliVersion $hadOriginal
 
+        $replacementStarted = $true
         if (Test-Path -LiteralPath $backupPath) { Remove-Item -LiteralPath $backupPath -Force }
         if (Test-Path -LiteralPath $finalPath) {
             [System.IO.File]::Move($finalPath, $backupPath)
             $oldMoved = $true
         }
+        Write-InstallerTransaction $markerPath 'OLD_MOVED' $finalPath $backupPath $temporaryPath $expectedCliVersion $hadOriginal
         [System.IO.File]::Move($temporaryPath, $finalPath)
+        Write-InstallerTransaction $markerPath 'NEW_MOVED' $finalPath $backupPath $temporaryPath $expectedCliVersion $hadOriginal
         try {
             Test-BinarySmoke $finalPath $expectedCliVersion
         } catch {
@@ -406,7 +592,9 @@ function Invoke-ContexaInstaller {
             if ($oldMoved -and (Test-Path -LiteralPath $backupPath)) { [System.IO.File]::Move($backupPath, $finalPath) }
             throw ('Final binary smoke failed; previous CLI was restored. ' + $_.Exception.Message)
         }
+        Write-InstallerTransaction $markerPath 'SMOKE_PASSED' $finalPath $backupPath $temporaryPath $expectedCliVersion $hadOriginal
         Ensure-CommandPath $installDir $finalPath
+        Remove-InstallerTransaction $markerPath
         Write-Host ('  Contexa ' + $version + (Select-InstallerText ' installed and verified.' 'IOyEpOy5mOyZgCDqsoDspp3snYQg7JmE66OM7ZaI7Iq164uI64ukLg==')) -ForegroundColor Green
         Write-Host ('  ' + (Select-InstallerText 'Primary commands:' '7KO87JqUIOuqheuguTo='))
         Write-Host '    contexa init'
@@ -420,9 +608,14 @@ function Invoke-ContexaInstaller {
         if ($oldMoved -and -not (Test-Path -LiteralPath $finalPath) -and (Test-Path -LiteralPath $backupPath)) {
             [System.IO.File]::Move($backupPath, $finalPath)
         }
+        if ((-not $replacementStarted) -or (Test-BinaryHealthy $finalPath)) {
+            Remove-InstallerTransaction $markerPath
+        }
         throw
     } finally {
-        if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue }
+        if (-not (Test-Path -LiteralPath $markerPath) -and (Test-Path -LiteralPath $temporaryPath)) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

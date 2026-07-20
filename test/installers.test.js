@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
@@ -63,8 +64,10 @@ test('install.sh enforces supported platforms, bounded download and atomic repla
   assert.equal(/^\s*local\s+/m.test(src), false, 'POSIX sh script must not use bash-only local declarations');
   assert.equal(src.includes('docker'), false, 'installer must not block on Docker');
   assert.match(src, /--connect-timeout "\$CONNECT_TIMEOUT"/);
-  assert.match(src, /--max-time "\$TOTAL_TIMEOUT"/);
-  assert.match(src, /--retry "\$RETRIES"/);
+  assert.match(src, /--max-time "\$download_remaining"/);
+  assert.match(src, /download_attempt/);
+  assert.match(src, /HTTP_429_RATE_LIMIT/);
+  assert.match(src, /CONNECTION_RESET/);
   assert.match(src, /release-manifest\.json\.sig/);
   assert.match(src, /snapshot-channel\/channel-manifest\.json/);
   assert.match(src, /CONTEXA_CHANNEL_SIGNATURE_URL/);
@@ -176,4 +179,48 @@ test('install.sh passes sh -n when sh is available', () => {
     return;
   }
   assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+test('CLI release bundle satisfies the installer signature and asset contract', {
+  skip: !process.env.CONTEXA_RELEASE_BUNDLE_ROOT,
+}, () => {
+  const bundleRoot = path.resolve(process.env.CONTEXA_RELEASE_BUNDLE_ROOT);
+  const manifestPath = path.join(bundleRoot, 'release-manifest.json');
+  const signaturePath = path.join(bundleRoot, 'release-manifest.json.sig');
+  const channelPath = path.join(bundleRoot, 'channel-manifest.json');
+  const channelSignaturePath = path.join(bundleRoot, 'channel-manifest.json.sig');
+  const publicKeyPath = path.join(bundleRoot, 'release-signing-public.pem');
+  for (const file of [manifestPath, signaturePath, channelPath, channelSignaturePath, publicKeyPath]) {
+    assert.equal(fs.existsSync(file), true, `release contract file is missing: ${file}`);
+  }
+
+  const publicKey = fs.readFileSync(publicKeyPath);
+  const manifestBytes = fs.readFileSync(manifestPath);
+  const manifestSignature = Buffer.from(read(signaturePath).trim(), 'base64');
+  assert.equal(crypto.verify('sha256', manifestBytes, publicKey, manifestSignature), true,
+    'release manifest signature must verify with the installer trust key');
+  const manifest = JSON.parse(manifestBytes);
+
+  for (const asset of manifest.assets) {
+    const binaryPath = path.join(bundleRoot, 'dist', asset.file, asset.file);
+    const sidecarPath = `${binaryPath}.sha256`;
+    assert.equal(fs.existsSync(binaryPath), true, `release asset is missing: ${asset.file}`);
+    assert.equal(fs.existsSync(sidecarPath), true, `release sidecar is missing: ${asset.checksumFile}`);
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(binaryPath)).digest('hex');
+    const sidecar = read(sidecarPath).trim().split(/\s+/)[0].toLowerCase();
+    assert.equal(actual, asset.sha256, `manifest digest mismatch: ${asset.file}`);
+    assert.equal(sidecar, asset.sha256, `sidecar digest mismatch: ${asset.file}`);
+  }
+
+  const channelBytes = fs.readFileSync(channelPath);
+  const channelSignature = Buffer.from(read(channelSignaturePath).trim(), 'base64');
+  assert.equal(crypto.verify('sha256', channelBytes, publicKey, channelSignature), true,
+    'channel manifest signature must verify with the installer trust key');
+  const channel = JSON.parse(channelBytes);
+  assert.equal(channel.channel, manifest.channel);
+  assert.equal(channel.releaseTag, manifest.releaseTag);
+  assert.equal(channel.cliVersion, manifest.cliVersion);
+  assert.equal(channel.starterVersion, manifest.starter.version);
+  assert.equal(channel.releaseManifestSha256,
+    crypto.createHash('sha256').update(manifestBytes).digest('hex'));
 });
