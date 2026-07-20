@@ -41,9 +41,14 @@ function createRelease(keys, version, platform, assetBytes, options = {}) {
     codeSignature: 'unsigned-snapshot',
   };
   const manifest = Buffer.from(`${JSON.stringify({
-    releaseTag: `v${version}`,
-    cliVersion: version,
-    starterVersion: '0.1.0-SNAPSHOT',
+    channel: options.releaseChannel || 'snapshot',
+    releaseTag: options.releaseTag || `v${version}`,
+    cliVersion: options.releaseCliVersion || version,
+    starter: {
+      groupId: 'ai.ctxa',
+      artifactId: 'spring-boot-starter-contexa',
+      version: options.releaseStarterVersion || '0.1.0-SNAPSHOT',
+    },
     assets: [asset],
     signature: {
       required: true,
@@ -61,6 +66,32 @@ function createRelease(keys, version, platform, assetBytes, options = {}) {
     [`${prefix}${file}`, assetBytes],
     [`${prefix}${file}.sha256`, Buffer.from(`${options.sidecarDigest || digest}  ${file}\n`)],
   ]);
+}
+
+function createChannel(keys, version, options = {}) {
+  const manifest = Buffer.from(`${JSON.stringify({
+    schemaVersion: 1,
+    channel: options.channel || 'snapshot',
+    releaseTag: options.releaseTag || `v${version}`,
+    cliVersion: options.cliVersion || version,
+    starterVersion: options.starterVersion || '0.1.0-SNAPSHOT',
+    releaseManifestSha256: options.releaseManifestSha256 || '0'.repeat(64),
+  }, null, 2)}\n`);
+  const signer = options.signingKey || keys.privateKey;
+  const signature = crypto.sign('sha256', manifest, signer).toString('base64');
+  return new Map([
+    ['/channel/channel-manifest.json', manifest],
+    ['/channel/channel-manifest.json.sig', Buffer.from(`${signature}\n`)],
+  ]);
+}
+
+function createChannelForRelease(keys, version, releaseFiles, options = {}) {
+  const releaseManifest = releaseFiles.get(`/downloads/v${version}/release-manifest.json`);
+  assert.ok(releaseManifest, 'release manifest fixture is required before creating a channel');
+  return createChannel(keys, version, {
+    ...options,
+    releaseManifestSha256: sha256(releaseManifest),
+  });
 }
 
 async function withServer(handler, body) {
@@ -146,6 +177,15 @@ function windowsInstallerEnv(base, installDir, version, keyXml, action = 'instal
   };
 }
 
+function windowsChannelInstallerEnv(base, installDir, keyXml) {
+  return {
+    ...windowsInstallerEnv(base, installDir, 'unused', keyXml),
+    CONTEXA_VERSION: '',
+    CONTEXA_CHANNEL_MANIFEST_URL: `${base}/channel/channel-manifest.json`,
+    CONTEXA_CHANNEL_SIGNATURE_URL: `${base}/channel/channel-manifest.json.sig`,
+  };
+}
+
 function runWindowsInstaller(env) {
   return run(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1], env);
 }
@@ -225,6 +265,52 @@ test('PowerShell installer returns failure and preserves the existing binary for
   await assertPreserved(null, createRelease(keys, '9.9.3-test', 'windows', candidateBytes, { manifestDigest: '0'.repeat(64) }), 'bad-checksum');
 });
 
+test('PowerShell installer resolves the signed snapshot channel and rejects channel contract drift before replacement', { skip: process.platform !== 'win32', timeout: 30000 }, async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-channel-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 3072 });
+  const wrongKeys = crypto.generateKeyPairSync('rsa', { modulusLength: 3072 });
+  const xml = publicKeyXml(keys.publicKey);
+  const version = '9.9.5-test';
+  const candidate = buildWindowsCli(path.join(temp, 'candidate.exe'), version);
+  const existing = buildWindowsCli(path.join(temp, 'existing.exe'), '8.0.0-old');
+  const validRelease = createRelease(keys, version, 'windows', candidate);
+  const validFiles = new Map([
+    ...validRelease,
+    ...createChannelForRelease(keys, version, validRelease),
+  ]);
+  const installDir = path.join(temp, 'valid');
+  await withServer(releaseHandler(validFiles), async (base) => {
+    const result = await runWindowsInstaller(windowsChannelInstallerEnv(base, installDir, xml));
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+  });
+  assert.equal(spawnSync(path.join(installDir, 'contexa.exe'), ['--version'], { encoding: 'utf8' }).stdout.trim(), version);
+
+  async function assertChannelFailure(label, releaseOptions, channelOptions) {
+    const targetDir = path.join(temp, label);
+    fs.mkdirSync(targetDir);
+    const installed = path.join(targetDir, 'contexa.exe');
+    fs.writeFileSync(installed, existing);
+    const before = sha256(fs.readFileSync(installed));
+    const releaseFiles = createRelease(keys, version, 'windows', candidate, releaseOptions);
+    const files = new Map([
+      ...releaseFiles,
+      ...createChannelForRelease(keys, version, releaseFiles, channelOptions),
+    ]);
+    await withServer(releaseHandler(files), async (base) => {
+      const result = await runWindowsInstaller(windowsChannelInstallerEnv(base, targetDir, xml));
+      assert.notEqual(result.code, 0, `${label} must fail`);
+    });
+    assert.equal(sha256(fs.readFileSync(installed)), before, `${label} must preserve the installed binary`);
+  }
+
+  await assertChannelFailure('channel-cli-mismatch', {}, { cliVersion: '9.9.5-other' });
+  await assertChannelFailure('release-tag-mismatch', { releaseTag: 'v9.9.5-other' }, {});
+  await assertChannelFailure('starter-mismatch', { releaseStarterVersion: '0.2.0-SNAPSHOT' }, {});
+  await assertChannelFailure('asset-mismatch', { manifestDigest: '0'.repeat(64) }, {});
+  await assertChannelFailure('channel-signature', {}, { signingKey: wrongKeys.privateKey });
+});
+
 test('POSIX installer completes a signed Linux x64 installation against a fake release server', { skip: process.platform !== 'win32', timeout: 20000 }, async (t) => {
   if (!fs.existsSync(gitSh)) return;
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-posix-'));
@@ -247,7 +333,11 @@ test('POSIX installer completes a signed Linux x64 installation against a fake r
   const publicPem = keys.publicKey.export({ type: 'spki', format: 'pem' });
   const publicKeyPath = path.join(temp, 'public.pem');
   fs.writeFileSync(publicKeyPath, publicPem);
-  const files = createRelease(keys, version, 'linux', binary);
+  const releaseFiles = createRelease(keys, version, 'linux', binary);
+  const files = new Map([
+    ...releaseFiles,
+    ...createChannelForRelease(keys, version, releaseFiles),
+  ]);
 
   await withServer(releaseHandler(files), async (base) => {
     const toPosixPath = (value) => value.replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`).replace(/\\/g, '/');
@@ -256,7 +346,9 @@ test('POSIX installer completes a signed Linux x64 installation against a fake r
       PATH: `${posixShimDir}:/mingw64/bin:/usr/bin`,
       MSYS2_ENV_CONV_EXCL: 'PATH',
       HOME: toPosixPath(temp),
-      CONTEXA_VERSION: `v${version}`,
+      CONTEXA_VERSION: '',
+      CONTEXA_CHANNEL_MANIFEST_URL: `${base}/channel/channel-manifest.json`,
+      CONTEXA_CHANNEL_SIGNATURE_URL: `${base}/channel/channel-manifest.json.sig`,
       CONTEXA_RELEASE_DOWNLOAD_BASE: `${base}/downloads`,
       CONTEXA_TRUSTED_PUBLIC_KEY_PATH: toPosixPath(publicKeyPath),
       CONTEXA_INSTALL_DIR: toPosixPath(installDir),

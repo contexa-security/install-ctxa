@@ -27,7 +27,8 @@ function Select-InstallerText {
 }
 
 $script:Repository = 'contexa-security/contexa-cli'
-$script:DefaultReleaseApi = 'https://api.github.com/repos/contexa-security/contexa-cli/releases/latest'
+$script:DefaultChannelManifestUrl = 'https://raw.githubusercontent.com/contexa-security/contexa-cli/snapshot-channel/channel-manifest.json'
+$script:DefaultChannelSignatureUrl = 'https://raw.githubusercontent.com/contexa-security/contexa-cli/snapshot-channel/channel-manifest.json.sig'
 $script:DefaultDownloadBase = 'https://github.com/contexa-security/contexa-cli/releases/download'
 $script:PublicKeyXml = '<RSAKeyValue><Modulus>osHQvVy9S+AGAvskLk13njD9SoRHMURAbU2RQWZgQt2t0vN3Ib7aVMIwStGdJhaDIuPHTg0WrwM6ogPDDqfFmHHm8XkviBHnkgFQWvovLHtRudSgU6g+5ReaT0G0HsWFC3aGVJhOEwo5EqJJxZgjIc533CJTyn6ZbV8C0PGPP3kZQb1C/zPCaVtQg02v3Vm1C+sivBfCFRRJlcXhfc5hvbtB40DcRFkJfkBbdHBwdAnRfuH8OnIeL9dWEFyNgR7ZIREnjqNahtZbUM9gBS1p1Zw3ffTls2QSyMvQobqwNOdfP2/LN0K8uiJJ8K7nh524wGANdTlmKY2cAAkUbZsO2FK7sLCcVDXShQptXFj31DEzdQCb9hAnarXK5C6qBFxloDGzV8b+xlALFQBIO8xwXlxR8jZq+CiVJmWHUr78A0fubstaBUSgpU1ZzdUl0plI6MczU/udM7miH/O1ih7t0ox745ahU/7eXEYOLNRAJs2gidol7m+apyY/qV7DIMhz</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 
@@ -158,16 +159,53 @@ function Test-ReleaseManifestSignature {
     if (-not $verified) { throw 'Release manifest signature verification failed. The existing CLI was not changed.' }
 }
 
-function Get-TargetVersion {
+function Get-TargetRelease {
+    param([string]$DownloadBase)
     if (-not [string]::IsNullOrWhiteSpace($env:CONTEXA_VERSION)) {
         $version = $env:CONTEXA_VERSION.Trim()
-    } else {
-        $api = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_RELEASE_API_URL)) { $script:DefaultReleaseApi } else { $env:CONTEXA_RELEASE_API_URL }
-        $metadata = Convert-BytesToText (Invoke-BoundedDownload $api) | ConvertFrom-Json
-        $version = [string]$metadata.tag_name
+        if ($version -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$') { throw ('Invalid or empty release tag: ' + $version) }
+        return [pscustomobject]@{
+            ReleaseTag = $version
+            CliVersion = $version.Substring(1)
+            Channel = $null
+            StarterVersion = $null
+            ReleaseManifestSha256 = $null
+        }
     }
-    if ($version -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$') { throw ('Invalid or empty release tag: ' + $version) }
-    return $version
+
+    $manifestUrl = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_CHANNEL_MANIFEST_URL)) {
+        $script:DefaultChannelManifestUrl
+    } else { $env:CONTEXA_CHANNEL_MANIFEST_URL.Trim() }
+    $signatureUrl = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_CHANNEL_SIGNATURE_URL)) {
+        $script:DefaultChannelSignatureUrl
+    } else { $env:CONTEXA_CHANNEL_SIGNATURE_URL.Trim() }
+    $manifestBytes = Invoke-BoundedDownload $manifestUrl
+    $signatureBytes = Invoke-BoundedDownload $signatureUrl
+    Test-ReleaseManifestSignature $manifestBytes $signatureBytes (Get-TrustedPublicKeyXml $DownloadBase)
+    $channelManifest = Convert-BytesToText $manifestBytes | ConvertFrom-Json
+    $version = [string]$channelManifest.releaseTag
+    $cliVersion = [string]$channelManifest.cliVersion
+    $starterVersion = [string]$channelManifest.starterVersion
+    $releaseManifestSha256 = [string]$channelManifest.releaseManifestSha256
+    if ($channelManifest.schemaVersion -ne 1 -or $channelManifest.channel -ne 'snapshot') {
+        throw 'Signed channel manifest schema or channel is unsupported.'
+    }
+    if ($version -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$' -or $cliVersion -ne $version.Substring(1)) {
+        throw 'Signed channel manifest tag and CLI version do not match.'
+    }
+    if (-not $starterVersion.EndsWith('-SNAPSHOT')) {
+        throw 'Signed snapshot channel requires a SNAPSHOT starter version.'
+    }
+    if ($releaseManifestSha256 -notmatch '^[0-9a-f]{64}$') {
+        throw 'Signed channel manifest release digest is invalid.'
+    }
+    return [pscustomobject]@{
+        ReleaseTag = $version
+        CliVersion = $cliVersion
+        Channel = 'snapshot'
+        StarterVersion = $starterVersion
+        ReleaseManifestSha256 = $releaseManifestSha256
+    }
 }
 
 function Get-ReportedVersion {
@@ -186,6 +224,16 @@ function Get-Sha256FileHex {
     } finally {
         $sha256.Dispose()
         $stream.Dispose()
+    }
+}
+
+function Get-Sha256BytesHex {
+    param([byte[]]$Bytes)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
     }
 }
 
@@ -290,9 +338,10 @@ function Invoke-ContexaInstaller {
     }
 
     if (-not (Test-Path -LiteralPath $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
-    $version = Get-TargetVersion
-    $expectedCliVersion = $version.Substring(1)
     $downloadBase = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_RELEASE_DOWNLOAD_BASE)) { $script:DefaultDownloadBase } else { $env:CONTEXA_RELEASE_DOWNLOAD_BASE.TrimEnd('/') }
+    $targetRelease = Get-TargetRelease $downloadBase
+    $version = $targetRelease.ReleaseTag
+    $expectedCliVersion = $targetRelease.CliVersion
     $releaseBase = $downloadBase + '/' + $version
 
     $manifestBytes = Invoke-BoundedDownload ($releaseBase + '/release-manifest.json')
@@ -301,6 +350,12 @@ function Invoke-ContexaInstaller {
     $manifest = Convert-BytesToText $manifestBytes | ConvertFrom-Json
     if ($manifest.releaseTag -ne $version -or $manifest.cliVersion -ne $expectedCliVersion) {
         throw 'Signed release manifest does not match the requested tag and CLI version.'
+    }
+    if ($null -ne $targetRelease.Channel -and ($manifest.channel -ne $targetRelease.Channel -or $manifest.starter.version -ne $targetRelease.StarterVersion)) {
+        throw 'Signed release manifest does not match the signed channel and starter version.'
+    }
+    if ($null -ne $targetRelease.Channel -and (Get-Sha256BytesHex $manifestBytes) -ne $targetRelease.ReleaseManifestSha256) {
+        throw 'Signed release manifest digest does not match the signed channel.'
     }
     if (-not $manifest.signature.required -or $manifest.signature.algorithm -ne 'RSA-3072-SHA256') {
         throw 'Signed release manifest trust contract is missing or unsupported.'

@@ -35,8 +35,13 @@ test('install.ps1 enforces the signed, bounded and atomic installation contract'
   assert.match(src, /CONTEXA_HTTP_TOTAL_TIMEOUT_SEC/);
   assert.match(src, /CONTEXA_HTTP_RETRIES/);
   assert.match(src, /release-manifest\.json\.sig/);
+  assert.match(src, /snapshot-channel\/channel-manifest\.json/);
+  assert.match(src, /CONTEXA_CHANNEL_SIGNATURE_URL/);
+  assert.match(src, /Signed release manifest does not match the signed channel and starter version/);
+  assert.equal(src.includes('releases/latest'), false);
+  assert.equal(src.includes('CONTEXA_RELEASE_API_URL'), false);
   assert.match(src, /VerifyData/);
-  assert.match(src, /Get-FileHash -LiteralPath \$temporaryPath -Algorithm SHA256/);
+  assert.match(src, /Get-Sha256FileHex \$temporaryPath/);
   assert.match(src, /\.new\.exe/);
   assert.match(src, /\[System\.IO\.File\]::Move\(\$temporaryPath, \$finalPath\)/);
   assert.match(src, /\.previous/);
@@ -61,6 +66,11 @@ test('install.sh enforces supported platforms, bounded download and atomic repla
   assert.match(src, /--max-time "\$TOTAL_TIMEOUT"/);
   assert.match(src, /--retry "\$RETRIES"/);
   assert.match(src, /release-manifest\.json\.sig/);
+  assert.match(src, /snapshot-channel\/channel-manifest\.json/);
+  assert.match(src, /CONTEXA_CHANNEL_SIGNATURE_URL/);
+  assert.match(src, /Signed release manifest starter version mismatch/);
+  assert.equal(src.includes('releases/latest'), false);
+  assert.equal(src.includes('CONTEXA_RELEASE_API_URL'), false);
   assert.match(src, /openssl dgst -sha256 -verify/);
   assert.match(src, /Linux ARM64 is not supported/);
   assert.match(src, /Intel Mac is not supported/);
@@ -127,12 +137,12 @@ test('api prioritizes explicit paths and exposes immutable version URLs', () => 
   assert.ok(sh.body.startsWith('#!/bin/sh'));
   assert.equal(sh.headers['cache-control'], 'no-store');
 
-  const immutable = invoke('/v0.1.2-phase1.1/install.ps1');
+  const immutable = invoke('/v9.9.9-installer-test/install.ps1');
   assert.equal(immutable.statusCode, 302);
-  assert.equal(immutable.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/v0.1.2-phase1.1/install.ps1');
+  assert.equal(immutable.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/v9.9.9-installer-test/install.ps1');
   assert.equal(immutable.headers['cache-control'], 'public, max-age=31536000, immutable');
-  const caseSensitiveTag = invoke('/v0.1.2-Phase1.1/install.sh');
-  assert.equal(caseSensitiveTag.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/v0.1.2-Phase1.1/install.sh');
+  const caseSensitiveTag = invoke('/v9.9.9-Installer-Test/install.sh');
+  assert.equal(caseSensitiveTag.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/v9.9.9-Installer-Test/install.sh');
 
   const originalStableRef = process.env.CONTEXA_STABLE_INSTALLER_REF;
   try {

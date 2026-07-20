@@ -2,7 +2,8 @@
 set -eu
 
 REPO="contexa-security/contexa-cli"
-DEFAULT_RELEASE_API="https://api.github.com/repos/$REPO/releases/latest"
+DEFAULT_CHANNEL_MANIFEST_URL="https://raw.githubusercontent.com/$REPO/snapshot-channel/channel-manifest.json"
+DEFAULT_CHANNEL_SIGNATURE_URL="https://raw.githubusercontent.com/$REPO/snapshot-channel/channel-manifest.json.sig"
 DEFAULT_DOWNLOAD_BASE="https://github.com/$REPO/releases/download"
 
 case "${CONTEXA_LANG:-${LANG:-en}}" in
@@ -176,6 +177,39 @@ manifest_asset_code_signature() {
   ' "$MANIFEST_FILE"
 }
 
+manifest_string_value() {
+  awk -v key="\"$2\"" '
+    index($0, key) {
+      value = $0
+      sub(".*" key "[[:space:]]*:[[:space:]]*\"", "", value)
+      sub("\".*$", "", value)
+      print value
+      exit
+    }
+  ' "$1"
+}
+
+manifest_starter_version() {
+  awk '
+    index($0, "\"starter\"") { in_starter = 1 }
+    in_starter && match($0, /"version": "[^"]+"/) {
+      value = substr($0, RSTART, RLENGTH)
+      sub(/^"version": "/, "", value); sub(/"$/, "", value)
+      print value; exit
+    }
+  ' "$1"
+}
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{ print tolower($1) }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print tolower($1) }'
+  else
+    fail "Neither sha256sum nor shasum is available."
+  fi
+}
+
 reported_version() {
   "$1" --version 2>/dev/null | awk 'NR == 1 { print; exit }'
 }
@@ -264,33 +298,56 @@ STATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/contexa-installer.XXXXXX")
 MANIFEST_FILE="$STATE_DIR/release-manifest.json"
 SIGNATURE_TEXT="$STATE_DIR/release-manifest.json.sig"
 SIGNATURE_BINARY="$STATE_DIR/release-manifest.sig.bin"
+CHANNEL_MANIFEST_FILE="$STATE_DIR/channel-manifest.json"
+CHANNEL_SIGNATURE_TEXT="$STATE_DIR/channel-manifest.json.sig"
+CHANNEL_SIGNATURE_BINARY="$STATE_DIR/channel-manifest.sig.bin"
 PUBLIC_KEY="$STATE_DIR/release-signing-public.pem"
 SIDECAR_FILE="$STATE_DIR/asset.sha256"
-METADATA_FILE="$STATE_DIR/release.json"
 NEW_BINARY=$(mktemp "$INSTALL_DIR/.contexa.new.XXXXXX")
 cleanup() { rm -rf "$STATE_DIR"; rm -f "$NEW_BINARY"; }
 trap cleanup EXIT HUP INT TERM
 
+DOWNLOAD_BASE="${CONTEXA_RELEASE_DOWNLOAD_BASE:-$DEFAULT_DOWNLOAD_BASE}"
+write_public_key "$PUBLIC_KEY"
 if [ -n "${CONTEXA_VERSION:-}" ]; then
   VERSION=$CONTEXA_VERSION
+  RESOLVED_CHANNEL=
+  CHANNEL_STARTER_VERSION=
+  CHANNEL_RELEASE_MANIFEST_SHA=
 else
-  RELEASE_API="${CONTEXA_RELEASE_API_URL:-$DEFAULT_RELEASE_API}"
-  download "$RELEASE_API" "$METADATA_FILE" || fail "Could not fetch release metadata within the configured timeout."
-  VERSION=$(awk -F '"' '/"tag_name"/ { print $4; exit }' "$METADATA_FILE")
+  CHANNEL_MANIFEST_URL="${CONTEXA_CHANNEL_MANIFEST_URL:-$DEFAULT_CHANNEL_MANIFEST_URL}"
+  CHANNEL_SIGNATURE_URL="${CONTEXA_CHANNEL_SIGNATURE_URL:-$DEFAULT_CHANNEL_SIGNATURE_URL}"
+  download "$CHANNEL_MANIFEST_URL" "$CHANNEL_MANIFEST_FILE" || fail "Could not download the snapshot channel manifest."
+  download "$CHANNEL_SIGNATURE_URL" "$CHANNEL_SIGNATURE_TEXT" || fail "Could not download the snapshot channel signature."
+  openssl base64 -d -A -in "$CHANNEL_SIGNATURE_TEXT" -out "$CHANNEL_SIGNATURE_BINARY" >/dev/null 2>&1 || fail "Channel manifest signature is not valid base64."
+  openssl dgst -sha256 -verify "$PUBLIC_KEY" -signature "$CHANNEL_SIGNATURE_BINARY" "$CHANNEL_MANIFEST_FILE" >/dev/null 2>&1 || fail "Channel manifest signature verification failed. The existing CLI was not changed."
+  grep -Fq '"schemaVersion": 1' "$CHANNEL_MANIFEST_FILE" || fail "Signed channel manifest schema is unsupported."
+  RESOLVED_CHANNEL=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" channel)
+  VERSION=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" releaseTag)
+  CHANNEL_CLI_VERSION=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" cliVersion)
+  CHANNEL_STARTER_VERSION=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" starterVersion)
+  CHANNEL_RELEASE_MANIFEST_SHA=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" releaseManifestSha256)
+  [ "$RESOLVED_CHANNEL" = snapshot ] || fail "Signed channel manifest is not the snapshot channel."
+  [ "$CHANNEL_CLI_VERSION" = "${VERSION#v}" ] || fail "Signed channel manifest tag and CLI version do not match."
+  case "$CHANNEL_STARTER_VERSION" in *-SNAPSHOT) ;; *) fail "Signed snapshot channel requires a SNAPSHOT starter version." ;; esac
+  printf '%s\n' "$CHANNEL_RELEASE_MANIFEST_SHA" | grep -Eq '^[0-9a-f]{64}$' || fail "Signed channel manifest release digest is invalid."
 fi
 case "$VERSION" in v[0-9A-Za-z][0-9A-Za-z._-]*) ;; *) fail "Invalid or empty release tag: $VERSION" ;; esac
 EXPECTED_VERSION=${VERSION#v}
-DOWNLOAD_BASE="${CONTEXA_RELEASE_DOWNLOAD_BASE:-$DEFAULT_DOWNLOAD_BASE}"
 RELEASE_BASE="${DOWNLOAD_BASE%/}/$VERSION"
 
 download "$RELEASE_BASE/release-manifest.json" "$MANIFEST_FILE" || fail "Could not download release-manifest.json."
 download "$RELEASE_BASE/release-manifest.json.sig" "$SIGNATURE_TEXT" || fail "Could not download release manifest signature."
-write_public_key "$PUBLIC_KEY"
 openssl base64 -d -A -in "$SIGNATURE_TEXT" -out "$SIGNATURE_BINARY" >/dev/null 2>&1 || fail "Release manifest signature is not valid base64."
 openssl dgst -sha256 -verify "$PUBLIC_KEY" -signature "$SIGNATURE_BINARY" "$MANIFEST_FILE" >/dev/null 2>&1 || fail "Release manifest signature verification failed. The existing CLI was not changed."
 
 grep -Fq "\"releaseTag\": \"$VERSION\"" "$MANIFEST_FILE" || fail "Signed manifest release tag mismatch."
 grep -Fq "\"cliVersion\": \"$EXPECTED_VERSION\"" "$MANIFEST_FILE" || fail "Signed manifest CLI version mismatch."
+if [ -n "$RESOLVED_CHANNEL" ]; then
+  [ "$(manifest_string_value "$MANIFEST_FILE" channel)" = "$RESOLVED_CHANNEL" ] || fail "Signed release manifest channel mismatch."
+  [ "$(manifest_starter_version "$MANIFEST_FILE")" = "$CHANNEL_STARTER_VERSION" ] || fail "Signed release manifest starter version mismatch."
+  [ "$(sha256_file "$MANIFEST_FILE")" = "$CHANNEL_RELEASE_MANIFEST_SHA" ] || fail "Signed release manifest digest does not match the signed channel."
+fi
 grep -Fq '"required": true' "$MANIFEST_FILE" || fail "Signed manifest trust contract is missing."
 grep -Fq '"algorithm": "RSA-3072-SHA256"' "$MANIFEST_FILE" || fail "Signed manifest trust algorithm is unsupported."
 grep -Fq "\"file\": \"$FILE\"" "$MANIFEST_FILE" || fail "Signed manifest does not register $PLATFORM."
@@ -309,13 +366,7 @@ fi
 download "$RELEASE_BASE/$FILE" "$NEW_BINARY" || fail "Binary download failed within the configured timeout."
 download "$RELEASE_BASE/$FILE.sha256" "$SIDECAR_FILE" || fail "Checksum download failed."
 SIDECAR_SHA=$(awk '{ print tolower($1); exit }' "$SIDECAR_FILE")
-if command -v sha256sum >/dev/null 2>&1; then
-  ACTUAL_SHA=$(sha256sum "$NEW_BINARY" | awk '{ print tolower($1) }')
-elif command -v shasum >/dev/null 2>&1; then
-  ACTUAL_SHA=$(shasum -a 256 "$NEW_BINARY" | awk '{ print tolower($1) }')
-else
-  fail "Neither sha256sum nor shasum is available."
-fi
+ACTUAL_SHA=$(sha256_file "$NEW_BINARY")
 [ "$SIDECAR_SHA" = "$MANIFEST_SHA" ] && [ "$ACTUAL_SHA" = "$MANIFEST_SHA" ] || fail "Binary digest does not match the signed release manifest."
 
 chmod 755 "$NEW_BINARY"

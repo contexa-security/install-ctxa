@@ -12,9 +12,12 @@
 
 Linux ARM64, Intel Mac, Windows ARM64용 바이너리는 배포하지 않습니다. 지원하지 않는 환경에서는 기존 CLI나 사용자 파일을 변경하기 전에 명확한 오류로 종료합니다.
 
-## 안전한 최신 버전 설치
+## 안전한 시험 채널 설치
 
 POSIX 셸은 외부 다운로드가 성공한 경우에만 설치기를 실행하고, 다운로드 또는 설치 실패 코드를 호출자에게 반환합니다.
+설치기는 기본적으로 RSA 서명된 `snapshot` channel manifest를 검증하고,
+그 manifest가 지정한 CLI release tag와 starter version을 다시 서명된 release
+manifest와 교차검증합니다. GitHub `releases/latest`를 기본 선택기로 사용하지 않습니다.
 
 ```sh
 installer="$(mktemp)" && curl -fsSL --connect-timeout 5 --max-time 30 https://install.ctxa.ai/install.sh -o "$installer" && sh "$installer"; status=$?; rm -f "$installer"; exit $status
@@ -28,13 +31,15 @@ $ErrorActionPreference='Stop'; & ([scriptblock]::Create((Invoke-WebRequest https
 
 ## 고정 버전과 수명주기
 
-- 변경되지 않는 버전별 설치기: `https://install.ctxa.ai/v0.1.2-phase1.1/install.sh` 또는 `install.ps1`
-- 고정 CLI 릴리스 설치: `CONTEXA_VERSION=v0.1.2-phase1.1`
+- 변경되지 않는 버전별 설치기: `https://install.ctxa.ai/<installer-tag>/install.sh` 또는 `install.ps1`
+- 고정 CLI 릴리스 설치: `CONTEXA_VERSION=<release-tag>`
 - 직전 정상 바이너리로 롤백: `CONTEXA_INSTALL_ACTION=rollback`
 - CLI 바이너리 제거: `CONTEXA_INSTALL_ACTION=uninstall`
 - 사용자 프로젝트 원복: `contexa reset` — CLI 제거와 다른 작업입니다.
 
 동일 버전을 다시 실행하면 설치 바이너리를 교체하지 않습니다. 업데이트가 성공하면 직전 정상 바이너리를 `.previous`로 보존해 롤백 대상으로 사용합니다. 이전 경로에서 발견된 다른 `contexa` 바이너리는 자동으로 삭제하지 않고 경고만 출력합니다.
+`install-ctxa/package.json`의 version은 설치기 소스 자체의 버전이며 CLI release
+version이나 starter version을 선택하는 값이 아닙니다.
 
 ## 종료 코드
 
