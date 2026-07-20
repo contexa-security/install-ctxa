@@ -44,6 +44,7 @@ function createRelease(keys, version, platform, assetBytes, options = {}) {
     codeSignature: 'unsigned-snapshot',
   };
   const manifest = Buffer.from(`${JSON.stringify({
+    schemaVersion: options.schemaVersion || 2,
     channel: options.releaseChannel || 'snapshot',
     releaseTag: options.releaseTag || `v${version}`,
     cliVersion: options.releaseCliVersion || version,
@@ -52,10 +53,12 @@ function createRelease(keys, version, platform, assetBytes, options = {}) {
       artifactId: 'spring-boot-starter-contexa',
       version: options.releaseStarterVersion || '0.1.0-SNAPSHOT',
     },
-    source: {
-      repository: 'contexa-security/contexa-cli',
-      commit: options.sourceCommit || 'a'.repeat(40),
-    },
+    ...(options.omitSource ? {} : {
+      source: {
+        repository: 'contexa-security/contexa-cli',
+        commit: options.sourceCommit || 'a'.repeat(40),
+      },
+    }),
     assets: [asset],
     signature: {
       required: true,
@@ -356,8 +359,8 @@ test('PowerShell installer performs install, no-op, update, rollback and uninsta
   const v1 = buildWindowsCli(v1Path, '9.9.1-test');
   const v2 = buildWindowsCli(v2Path, '9.9.2-test');
   const files = new Map([
-    ...createRelease(keys, '9.9.1-test', 'windows', v1),
-    ...createRelease(keys, '9.9.2-test', 'windows', v2),
+    ...createRelease(keys, '9.9.1-test', 'windows', v1, { schemaVersion: 1, omitSource: true }),
+    ...createRelease(keys, '9.9.2-test', 'windows', v2, { schemaVersion: 1, omitSource: true }),
   ]);
 
   await withServer(releaseHandler(files), async (base) => {
@@ -511,6 +514,8 @@ test('PowerShell installer resolves the signed snapshot channel and rejects chan
   await assertChannelFailure('starter-mismatch', { releaseStarterVersion: '0.2.0-SNAPSHOT' }, {});
   await assertChannelFailure('asset-mismatch', { manifestDigest: '0'.repeat(64) }, {});
   await assertChannelFailure('channel-signature', {}, { signingKey: wrongKeys.privateKey });
+  await assertChannelFailure('legacy-release-schema', { schemaVersion: 1, omitSource: true }, {});
+  await assertChannelFailure('missing-source-provenance', { omitSource: true }, {});
 });
 
 test('PowerShell installer recovers every persisted replacement state without deleting the legacy binary', { skip: process.platform !== 'win32', timeout: 30000 }, async (t) => {
@@ -746,8 +751,8 @@ test('POSIX installer performs lifecycle and preserves the existing binary for t
 
   const lifecycleHarness = createPosixHarness(path.join(temp, 'lifecycle'));
   const lifecycleFiles = new Map([
-    ...createRelease(keys, currentVersion, 'linux', currentBinary),
-    ...createRelease(keys, nextVersion, 'linux', nextBinary),
+    ...createRelease(keys, currentVersion, 'linux', currentBinary, { schemaVersion: 1, omitSource: true }),
+    ...createRelease(keys, nextVersion, 'linux', nextBinary, { schemaVersion: 1, omitSource: true }),
   ]);
   await withServer(releaseHandler(lifecycleFiles), async (base) => {
     const first = await runPosixInstaller(posixInstallerEnv(base, lifecycleHarness, publicKeyPath, currentVersion));

@@ -470,11 +470,7 @@ function Ensure-CommandPath {
     }
     $conflicts = @($commands | Select-Object -Skip 1 | Where-Object { $_.Source -and ([System.IO.Path]::GetFullPath($_.Source) -ne [System.IO.Path]::GetFullPath($FinalPath)) })
     foreach ($conflict in $conflicts) {
-        if ($script:InstallerLanguage -eq 'ko') {
-            Write-Warning ('PATH에 다른 contexa 명령이 남아 있으며 삭제하지 않았습니다: ' + $conflict.Source)
-        } else {
-            Write-Warning ('Another contexa command remains on PATH and was not deleted: ' + $conflict.Source)
-        }
+        Write-Warning ((Select-InstallerText 'Another contexa command remains on PATH and was not deleted: ' 'UEFUSOyXkCDri6TrpbggY29udGV4YSDrqoXroLnsnbQg64Ko7JWEIOyeiOycvOupsCDsgq3soJztlZjsp4Ag7JWK7JWY7Iq164uI64ukOiA=') + $conflict.Source)
     }
 }
 
@@ -542,11 +538,28 @@ function Invoke-ContexaInstaller {
     if ($manifest.releaseTag -ne $version -or $manifest.cliVersion -ne $expectedCliVersion) {
         throw 'Signed release manifest does not match the requested tag and CLI version.'
     }
-    if ($manifest.source.repository -ne 'contexa-security/contexa-cli' -or
-        [string]$manifest.source.commit -notmatch '^[0-9a-f]{40}$') {
-        throw 'Signed release manifest source provenance is invalid.'
+    $releaseSchemaVersion = [int]$manifest.schemaVersion
+    if ($releaseSchemaVersion -notin @(1, 2)) {
+        throw 'Signed release manifest schema is unsupported.'
     }
-    if ($null -ne $targetRelease.Channel -and $manifest.source.commit -ne $targetRelease.SourceCommit) {
+    $sourceRepository = ''
+    $sourceCommit = ''
+    $sourceProperty = $manifest.PSObject.Properties['source']
+    if ($null -ne $sourceProperty -and $null -ne $sourceProperty.Value) {
+        $repositoryProperty = $sourceProperty.Value.PSObject.Properties['repository']
+        $commitProperty = $sourceProperty.Value.PSObject.Properties['commit']
+        if ($null -ne $repositoryProperty) { $sourceRepository = [string]$repositoryProperty.Value }
+        if ($null -ne $commitProperty) { $sourceCommit = [string]$commitProperty.Value }
+    }
+    if ($releaseSchemaVersion -eq 2 -or -not [string]::IsNullOrWhiteSpace($sourceRepository + $sourceCommit)) {
+        if ($sourceRepository -ne 'contexa-security/contexa-cli' -or $sourceCommit -notmatch '^[0-9a-f]{40}$') {
+            throw 'Signed release manifest source provenance is invalid.'
+        }
+    }
+    if ($null -ne $targetRelease.Channel -and $releaseSchemaVersion -ne 2) {
+        throw 'Signed channel requires release manifest schema 2.'
+    }
+    if ($null -ne $targetRelease.Channel -and $sourceCommit -ne $targetRelease.SourceCommit) {
         throw 'Signed release manifest source commit does not match the signed channel.'
     }
     if ($null -ne $targetRelease.Channel -and ($manifest.channel -ne $targetRelease.Channel -or $manifest.starter.version -ne $targetRelease.StarterVersion)) {

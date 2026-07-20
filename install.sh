@@ -511,9 +511,21 @@ openssl dgst -sha256 -verify "$PUBLIC_KEY" -signature "$SIGNATURE_BINARY" "$MANI
 
 grep -Fq "\"releaseTag\": \"$VERSION\"" "$MANIFEST_FILE" || fail "Signed manifest release tag mismatch."
 grep -Fq "\"cliVersion\": \"$EXPECTED_VERSION\"" "$MANIFEST_FILE" || fail "Signed manifest CLI version mismatch."
+if grep -Fq '"schemaVersion": 2' "$MANIFEST_FILE"; then
+  MANIFEST_SCHEMA=2
+elif grep -Fq '"schemaVersion": 1' "$MANIFEST_FILE"; then
+  MANIFEST_SCHEMA=1
+else
+  fail "Signed release manifest schema is unsupported."
+fi
+MANIFEST_SOURCE_REPOSITORY=$(manifest_string_value "$MANIFEST_FILE" repository)
 MANIFEST_SOURCE_COMMIT=$(manifest_string_value "$MANIFEST_FILE" commit)
-printf '%s\n' "$MANIFEST_SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || fail "Signed release manifest source provenance is invalid."
+if [ "$MANIFEST_SCHEMA" = 2 ] || [ -n "$MANIFEST_SOURCE_REPOSITORY$MANIFEST_SOURCE_COMMIT" ]; then
+  [ "$MANIFEST_SOURCE_REPOSITORY" = contexa-security/contexa-cli ] || fail "Signed release manifest source provenance is invalid."
+  printf '%s\n' "$MANIFEST_SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || fail "Signed release manifest source provenance is invalid."
+fi
 if [ -n "$RESOLVED_CHANNEL" ]; then
+  [ "$MANIFEST_SCHEMA" = 2 ] || fail "Signed channel requires release manifest schema 2."
   [ "$(manifest_string_value "$MANIFEST_FILE" channel)" = "$RESOLVED_CHANNEL" ] || fail "Signed release manifest channel mismatch."
   [ "$(manifest_starter_version "$MANIFEST_FILE")" = "$CHANNEL_STARTER_VERSION" ] || fail "Signed release manifest starter version mismatch."
   [ "$(sha256_file "$MANIFEST_FILE")" = "$CHANNEL_RELEASE_MANIFEST_SHA" ] || fail "Signed release manifest digest does not match the signed channel."

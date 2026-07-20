@@ -228,6 +228,7 @@ test('CLI release bundle satisfies the installer signature and asset contract', 
   assert.equal(crypto.verify('sha256', manifestBytes, publicKey, manifestSignature), true,
     'release manifest signature must verify with the installer trust key');
   const manifest = JSON.parse(manifestBytes);
+  assert.equal(manifest.schemaVersion, 2);
   assert.equal(manifest.source.repository, 'contexa-security/contexa-cli');
   assert.match(manifest.source.commit, /^[0-9a-f]{40}$/);
 
