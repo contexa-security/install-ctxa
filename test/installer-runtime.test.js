@@ -13,6 +13,7 @@ const sh = path.join(root, 'install.sh');
 const powershell = process.platform === 'win32'
   ? (process.env.CONTEXA_TEST_POWERSHELL || 'powershell.exe')
   : null;
+const windowsFixtureCompiler = process.platform === 'win32' ? 'powershell.exe' : null;
 const pwsh = process.platform === 'win32' ? 'pwsh.exe' : null;
 const pwshAvailable = !!pwsh && !spawnSync(pwsh, ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'],
   { windowsHide: true }).error;
@@ -163,7 +164,8 @@ function buildWindowsCli(target, version, options = {}) {
   const encoded = Buffer.from(source, 'utf16le').toString('base64');
   const escaped = target.replace(/'/g, "''");
   const script = `$source=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encoded}')); Add-Type -TypeDefinition $source -OutputAssembly '${escaped}' -OutputType ConsoleApplication`;
-  const result = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true });
+  const result = spawnSync(windowsFixtureCompiler, ['-NoProfile', '-NonInteractive', '-Command', script],
+    { encoding: 'utf8', windowsHide: true });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return fs.readFileSync(target);
 }
