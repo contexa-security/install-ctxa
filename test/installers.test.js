@@ -181,6 +181,34 @@ test('install.sh passes sh -n when sh is available', () => {
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
+test('Korean installer validation failures expose stable code without raw English fallback', () => {
+  const environment = {
+    ...process.env,
+    CONTEXA_LANG: 'ko',
+    CONTEXA_HTTP_CONNECT_TIMEOUT_SEC: 'bad',
+  };
+  const shell = process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\sh.exe' : 'sh';
+  const sh = spawnSync(shell, [shPath], { encoding: 'utf8', env: environment });
+  if (!(sh.error && sh.error.code === 'ENOENT')) {
+    const output = `${sh.stdout}\n${sh.stderr}`;
+    assert.equal(sh.status, 1, output);
+    assert.match(output, /INSTALLER_OPERATION_FAILED/);
+    assert.doesNotMatch(output, /must be an integer/);
+    assert.equal(output.includes('\uFFFD'), false);
+  }
+
+  if (process.platform === 'win32') {
+    const ps = spawnSync('powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1Path],
+      { encoding: 'utf8', env: environment });
+    const output = `${ps.stdout}\n${ps.stderr}`;
+    assert.equal(ps.status, 1, output);
+    assert.match(output, /INSTALLER_OPERATION_FAILED/);
+    assert.doesNotMatch(output, /must be an integer/);
+    assert.equal(output.includes('\uFFFD'), false);
+  }
+});
+
 test('CLI release bundle satisfies the installer signature and asset contract', {
   skip: !process.env.CONTEXA_RELEASE_BUNDLE_ROOT,
 }, () => {
@@ -200,6 +228,8 @@ test('CLI release bundle satisfies the installer signature and asset contract', 
   assert.equal(crypto.verify('sha256', manifestBytes, publicKey, manifestSignature), true,
     'release manifest signature must verify with the installer trust key');
   const manifest = JSON.parse(manifestBytes);
+  assert.equal(manifest.source.repository, 'contexa-security/contexa-cli');
+  assert.match(manifest.source.commit, /^[0-9a-f]{40}$/);
 
   for (const asset of manifest.assets) {
     const binaryPath = path.join(bundleRoot, 'dist', asset.file, asset.file);
@@ -221,6 +251,7 @@ test('CLI release bundle satisfies the installer signature and asset contract', 
   assert.equal(channel.releaseTag, manifest.releaseTag);
   assert.equal(channel.cliVersion, manifest.cliVersion);
   assert.equal(channel.starterVersion, manifest.starter.version);
+  assert.equal(channel.sourceCommit, manifest.source.commit);
   assert.equal(channel.releaseManifestSha256,
     crypto.createHash('sha256').update(manifestBytes).digest('hex'));
 });

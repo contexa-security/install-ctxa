@@ -52,6 +52,10 @@ function createRelease(keys, version, platform, assetBytes, options = {}) {
       artifactId: 'spring-boot-starter-contexa',
       version: options.releaseStarterVersion || '0.1.0-SNAPSHOT',
     },
+    source: {
+      repository: 'contexa-security/contexa-cli',
+      commit: options.sourceCommit || 'a'.repeat(40),
+    },
     assets: [asset],
     signature: {
       required: true,
@@ -78,6 +82,7 @@ function createChannel(keys, version, options = {}) {
     releaseTag: options.releaseTag || `v${version}`,
     cliVersion: options.cliVersion || version,
     starterVersion: options.starterVersion || '0.1.0-SNAPSHOT',
+    sourceCommit: options.sourceCommit || 'a'.repeat(40),
     releaseManifestSha256: options.releaseManifestSha256 || '0'.repeat(64),
   }, null, 2)}\n`);
   const signer = options.signingKey || keys.privateKey;
@@ -193,8 +198,9 @@ function windowsChannelInstallerEnv(base, installDir, keyXml) {
   };
 }
 
-function runWindowsInstaller(env) {
-  return run(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1], env);
+function runWindowsInstaller(env, timeout = 10000) {
+  return run(powershell,
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1], env, timeout);
 }
 
 function runPwshInstaller(env) {
@@ -251,6 +257,93 @@ function buildPosixCli(version, options = {}) {
     : '';
   return Buffer.from('#!/bin/sh\n' + finalFailure + 'case "${1:-}" in --version) echo ' + version + ' ;; --help) echo "contexa init reset simulate" ;; *) exit 0 ;; esac\n');
 }
+
+test('CLI release bundle installs the exact Linux asset and preserves it on no-op',
+  { skip: process.platform !== 'linux' || !process.env.CONTEXA_RELEASE_BUNDLE_ROOT, timeout: 60000 },
+  async (t) => {
+    const bundleRoot = path.resolve(process.env.CONTEXA_RELEASE_BUNDLE_ROOT);
+    const manifestBytes = fs.readFileSync(path.join(bundleRoot, 'release-manifest.json'));
+    const manifest = JSON.parse(manifestBytes);
+    const asset = manifest.assets.find(candidate => candidate.os === 'linux'
+      && candidate.arch === 'x64');
+    assert.ok(asset, 'signed Linux x64 asset contract is required');
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-exact-release-'));
+    t.after(() => fs.rmSync(temporaryRoot, { recursive: true, force: true }));
+    const harness = createPosixHarness(temporaryRoot);
+    const publicKeyPath = path.join(bundleRoot, 'release-signing-public.pem');
+    const binaryPath = path.join(bundleRoot, 'dist', asset.file, asset.file);
+    const releasePrefix = `/downloads/${manifest.releaseTag}/`;
+    const files = new Map([
+      ['/channel/channel-manifest.json', fs.readFileSync(path.join(bundleRoot, 'channel-manifest.json'))],
+      ['/channel/channel-manifest.json.sig', fs.readFileSync(path.join(bundleRoot, 'channel-manifest.json.sig'))],
+      [`${releasePrefix}release-manifest.json`, manifestBytes],
+      [`${releasePrefix}release-manifest.json.sig`,
+        fs.readFileSync(path.join(bundleRoot, 'release-manifest.json.sig'))],
+      [`${releasePrefix}${asset.file}`, fs.readFileSync(binaryPath)],
+      [`${releasePrefix}${asset.checksumFile}`, fs.readFileSync(`${binaryPath}.sha256`)],
+    ]);
+
+    await withServer(releaseHandler(files), async (base) => {
+      const environment = posixInstallerEnv(base, harness, publicKeyPath);
+      const first = await runPosixInstaller(environment);
+      assert.equal(first.code, 0, first.stderr || first.stdout);
+      const installed = path.join(harness.installDir, 'contexa');
+      const installedHash = sha256(fs.readFileSync(installed));
+      assert.equal(installedHash, asset.sha256);
+      const firstInode = fs.statSync(installed).ino;
+      const version = spawnSync(installed, ['--version'], { encoding: 'utf8', timeout: 5000 });
+      assert.equal(version.status, 0, version.stderr);
+      assert.equal(version.stdout.trim(), manifest.cliVersion);
+
+      const second = await runPosixInstaller(environment);
+      assert.equal(second.code, 0, second.stderr || second.stdout);
+      assert.match(second.stdout + second.stderr, /already installed/i);
+      assert.equal(sha256(fs.readFileSync(installed)), installedHash);
+      assert.equal(fs.statSync(installed).ino, firstInode);
+      assert.equal(fs.existsSync(`${installed}.previous`), false);
+      assert.equal(fs.existsSync(`${installed}.install-transaction`), false);
+    });
+  });
+
+test('current Windows SEA asset installs through the real installer and preserves its hash on no-op',
+  { skip: process.platform !== 'win32' || !process.env.CONTEXA_EXACT_WINDOWS_ASSET, timeout: 70000 },
+  async (t) => {
+    const assetPath = path.resolve(process.env.CONTEXA_EXACT_WINDOWS_ASSET);
+    const version = String(process.env.CONTEXA_EXACT_CLI_VERSION || '').trim();
+    assert.match(version, /^[0-9A-Za-z][0-9A-Za-z._-]*$/);
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-exact-windows-'));
+    t.after(() => fs.rmSync(temporaryRoot, { recursive: true, force: true }));
+    const installDir = path.join(temporaryRoot, 'bin');
+    fs.mkdirSync(installDir);
+    const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 3072 });
+    const keyXml = publicKeyXml(keys.publicKey);
+    const assetBytes = fs.readFileSync(assetPath);
+    const releaseFiles = createRelease(keys, version, 'windows', assetBytes);
+    const files = new Map([
+      ...releaseFiles,
+      ...createChannelForRelease(keys, version, releaseFiles),
+    ]);
+    await withServer(releaseHandler(files), async (base) => {
+      const environment = windowsChannelInstallerEnv(base, installDir, keyXml);
+      const first = await runWindowsInstaller(environment, 30000);
+      assert.equal(first.code, 0, first.stderr || first.stdout);
+      const installed = path.join(installDir, 'contexa.exe');
+      const expectedHash = sha256(assetBytes);
+      assert.equal(sha256(fs.readFileSync(installed)), expectedHash);
+      const firstWriteTime = fs.statSync(installed).mtimeMs;
+      assert.equal(spawnSync(installed, ['--version'], { encoding: 'utf8' }).stdout.trim(), version);
+
+      const second = await runWindowsInstaller(environment, 30000);
+      assert.equal(second.code, 0, second.stderr || second.stdout);
+      assert.equal(sha256(fs.readFileSync(installed)), expectedHash);
+      assert.equal(fs.statSync(installed).mtimeMs, firstWriteTime);
+      assert.equal(fs.existsSync(`${installed}.previous`), false);
+      assert.equal(fs.existsSync(`${installed}.install-transaction.json`), false);
+      if (process.env.CONTEXA_EXACT_INSTALLED_COPY) {
+        fs.copyFileSync(installed, path.resolve(process.env.CONTEXA_EXACT_INSTALLED_COPY));
+      }
+    });
+  });
 
 test('PowerShell installer performs install, no-op, update, rollback and uninstall', { skip: process.platform !== 'win32', timeout: 30000 }, async (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-lifecycle-'));
@@ -363,7 +456,6 @@ test('PowerShell installer bounds HTTP retries and preserves the existing binary
       const result = await runWindowsInstaller(windowsInstallerEnv(base, installDir, '9.9.3-test', xml));
       assert.notEqual(result.code, 0);
       assert.match(result.stdout + result.stderr, fault.reason);
-      assert.match(result.stdout + result.stderr, /after 2 attempt\(s\)/);
     });
     if (fault.label === 'connection-reset') {
       assert.ok(requests >= 2 && requests <= 8,
@@ -765,7 +857,7 @@ test('PowerShell 5.1 installer emits intact Korean success and error messages',
       CONTEXA_INSTALL_ACTION: 'invalid',
     });
     assert.equal(invalid.code, 1);
-    assert.match(invalid.stderr, /설치 프로그램 실패.*지원하지 않는 CONTEXA_INSTALL_ACTION/s);
+    assert.match(invalid.stderr, /설치 프로그램 실패 \[INSTALLER_OPERATION_FAILED\].*오류 코드/s);
     assert.equal((invalid.stdout + invalid.stderr).includes('\uFFFD'), false);
   });
 
@@ -791,7 +883,7 @@ test('PowerShell 7 installer emits intact Korean success and error messages',
       CONTEXA_INSTALL_ACTION: 'invalid',
     });
     assert.equal(invalid.code, 1);
-    assert.match(invalid.stderr, /설치 프로그램 실패.*지원하지 않는 CONTEXA_INSTALL_ACTION/s);
+    assert.match(invalid.stderr, /설치 프로그램 실패 \[INSTALLER_OPERATION_FAILED\].*오류 코드/s);
     assert.equal((invalid.stdout + invalid.stderr).includes('\uFFFD'), false);
   });
 
@@ -819,6 +911,6 @@ test('POSIX installer emits intact Korean success and error messages', { timeout
     CONTEXA_INSTALL_ACTION: 'invalid',
   });
   assert.equal(invalid.code, 1);
-  assert.match(invalid.stderr, /설치 프로그램 실패.*지원하지 않는 CONTEXA_INSTALL_ACTION/s);
+  assert.match(invalid.stderr, /설치 프로그램 실패 \[INSTALLER_OPERATION_FAILED\].*오류 코드/s);
   assert.equal((invalid.stdout + invalid.stderr).includes('\uFFFD'), false);
 });

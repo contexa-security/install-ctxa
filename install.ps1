@@ -238,6 +238,7 @@ function Get-TargetRelease {
     $version = [string]$channelManifest.releaseTag
     $cliVersion = [string]$channelManifest.cliVersion
     $starterVersion = [string]$channelManifest.starterVersion
+    $sourceCommit = [string]$channelManifest.sourceCommit
     $releaseManifestSha256 = [string]$channelManifest.releaseManifestSha256
     if ($channelManifest.schemaVersion -ne 1 -or $channelManifest.channel -ne 'snapshot') {
         throw 'Signed channel manifest schema or channel is unsupported.'
@@ -251,11 +252,15 @@ function Get-TargetRelease {
     if ($releaseManifestSha256 -notmatch '^[0-9a-f]{64}$') {
         throw 'Signed channel manifest release digest is invalid.'
     }
+    if ($sourceCommit -notmatch '^[0-9a-f]{40}$') {
+        throw 'Signed channel manifest source commit is invalid.'
+    }
     return [pscustomobject]@{
         ReleaseTag = $version
         CliVersion = $cliVersion
         Channel = 'snapshot'
         StarterVersion = $starterVersion
+        SourceCommit = $sourceCommit
         ReleaseManifestSha256 = $releaseManifestSha256
     }
 }
@@ -465,7 +470,11 @@ function Ensure-CommandPath {
     }
     $conflicts = @($commands | Select-Object -Skip 1 | Where-Object { $_.Source -and ([System.IO.Path]::GetFullPath($_.Source) -ne [System.IO.Path]::GetFullPath($FinalPath)) })
     foreach ($conflict in $conflicts) {
-        Write-Warning ('Another contexa command remains on PATH and was not deleted: ' + $conflict.Source)
+        if ($script:InstallerLanguage -eq 'ko') {
+            Write-Warning ('PATH에 다른 contexa 명령이 남아 있으며 삭제하지 않았습니다: ' + $conflict.Source)
+        } else {
+            Write-Warning ('Another contexa command remains on PATH and was not deleted: ' + $conflict.Source)
+        }
     }
 }
 
@@ -532,6 +541,13 @@ function Invoke-ContexaInstaller {
     $manifest = Convert-BytesToText $manifestBytes | ConvertFrom-Json
     if ($manifest.releaseTag -ne $version -or $manifest.cliVersion -ne $expectedCliVersion) {
         throw 'Signed release manifest does not match the requested tag and CLI version.'
+    }
+    if ($manifest.source.repository -ne 'contexa-security/contexa-cli' -or
+        [string]$manifest.source.commit -notmatch '^[0-9a-f]{40}$') {
+        throw 'Signed release manifest source provenance is invalid.'
+    }
+    if ($null -ne $targetRelease.Channel -and $manifest.source.commit -ne $targetRelease.SourceCommit) {
+        throw 'Signed release manifest source commit does not match the signed channel.'
     }
     if ($null -ne $targetRelease.Channel -and ($manifest.channel -ne $targetRelease.Channel -or $manifest.starter.version -ne $targetRelease.StarterVersion)) {
         throw 'Signed release manifest does not match the signed channel and starter version.'
@@ -626,7 +642,20 @@ try {
     Invoke-ContexaInstaller
     exit 0
 } catch {
-    [Console]::Error.WriteLine((Select-InstallerText 'Contexa installer failed: ' 'Q29udGV4YSDshKTsuZgg7ZSE66Gc6re4656oIOyLpO2MqDog') + $_.Exception.Message)
+    $failureCode = 'INSTALLER_OPERATION_FAILED'
+    if ($_.Exception.Message -match '\[([A-Z][A-Z0-9_]+)\]') {
+        $failureCode = $Matches[1]
+    }
+    if ($script:InstallerLanguage -eq 'ko') {
+        [Console]::Error.WriteLine(
+            'Contexa ' +
+            (Select-InstallerText 'installer failed [' '7ISk7LmYIO2UhOuhnOq3uOueqCDsi6TtjKggWw==') +
+            $failureCode +
+            (Select-InstallerText ']: Check the error code, fix the cause, and run the same command again.' 'XTog7Jik66WYIOy9lOuTnOulvCDtmZXsnbjtlZjqs6Ag7JuQ7J247J2EIOyImOygle2VnCDrkqQg6rCZ7J2AIOuqheugueydhCDri6Tsi5wg7Iuk7ZaJ7ZWY7IS47JqULg==')
+        )
+    } else {
+        [Console]::Error.WriteLine('Contexa installer failed [' + $failureCode + ']: ' + $_.Exception.Message)
+    }
     [Console]::Error.WriteLine((Select-InstallerText 'The existing CLI was preserved when possible. Fix the reported cause and run the same command again.' '6rCA64ql7ZWcIOqyveyasCDquLDsobQgQ0xJ66W8IOuztOyhtO2WiOyKteuLiOuLpC4g67O06rOg65CcIOybkOyduOydhCDtlbTqsrDtlZwg65KkIOqwmeydgCDrqoXroLnsnYQg64uk7IucIOyLpO2Wie2VmOyEuOyalC4='))
     exit 1
 } finally {

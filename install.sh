@@ -45,9 +45,26 @@ msg() {
 }
 
 fail() {
-  printf '%s\n' "$(msg fail_prefix): $1" >&2
+  if [ "$INSTALL_LANG" = ko ]; then
+    printf '%s\n' "$(msg fail_prefix) [INSTALLER_OPERATION_FAILED]: 오류 코드를 확인하고 원인을 수정한 뒤 같은 명령을 다시 실행하세요." >&2
+  else
+    printf '%s\n' "$(msg fail_prefix) [INSTALLER_OPERATION_FAILED]: $1" >&2
+  fi
   printf '%s\n' "$(msg preserved)" >&2
   exit 1
+}
+
+download_failure() {
+  reason=$1
+  attempts=$2
+  total=$3
+  url=$4
+  guidance=$5
+  if [ "$INSTALL_LANG" = ko ]; then
+    printf '%s\n' "HTTP 다운로드 실패 [$reason]: $attempts회 시도, 제한시간 ${total}초, 주소 $url. 같은 설치 명령을 다시 실행하세요." >&2
+  else
+    printf '%s\n' "HTTP download failed [$reason] after $attempts attempt(s) within $total second(s): $url. $guidance" >&2
+  fi
 }
 
 positive_int() {
@@ -76,7 +93,7 @@ download() {
     download_now=$(date +%s)
     download_remaining=$((TOTAL_TIMEOUT - download_now + download_started))
     if [ "$download_remaining" -le 0 ]; then
-      printf '%s\n' "HTTP download failed [TIMEOUT] after $download_attempt attempt(s) within $TOTAL_TIMEOUT second(s): $download_url. Retry the same installer." >&2
+      download_failure TIMEOUT "$download_attempt" "$TOTAL_TIMEOUT" "$download_url" 'Retry the same installer.'
       return 1
     fi
     download_status=0
@@ -106,7 +123,7 @@ download() {
         TIMEOUT|CONNECTION_RESET|HTTP_408_TIMEOUT|HTTP_5XX) download_guidance='The endpoint was temporarily unavailable. Retry the same installer.' ;;
         *) download_guidance='Check the URL and trust configuration before retrying the same installer.' ;;
       esac
-      printf '%s\n' "HTTP download failed [$download_reason] after $download_attempt attempt(s) within $TOTAL_TIMEOUT second(s): $download_url. $download_guidance" >&2
+    download_failure "$download_reason" "$download_attempt" "$TOTAL_TIMEOUT" "$download_url" "$download_guidance"
       return 1
     fi
     download_attempt=$((download_attempt + 1))
@@ -461,6 +478,7 @@ if [ -n "${CONTEXA_VERSION:-}" ]; then
   VERSION=$CONTEXA_VERSION
   RESOLVED_CHANNEL=
   CHANNEL_STARTER_VERSION=
+  CHANNEL_SOURCE_COMMIT=
   CHANNEL_RELEASE_MANIFEST_SHA=
 else
   CHANNEL_MANIFEST_URL="${CONTEXA_CHANNEL_MANIFEST_URL:-$DEFAULT_CHANNEL_MANIFEST_URL}"
@@ -474,11 +492,13 @@ else
   VERSION=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" releaseTag)
   CHANNEL_CLI_VERSION=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" cliVersion)
   CHANNEL_STARTER_VERSION=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" starterVersion)
+  CHANNEL_SOURCE_COMMIT=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" sourceCommit)
   CHANNEL_RELEASE_MANIFEST_SHA=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" releaseManifestSha256)
   [ "$RESOLVED_CHANNEL" = snapshot ] || fail "Signed channel manifest is not the snapshot channel."
   [ "$CHANNEL_CLI_VERSION" = "${VERSION#v}" ] || fail "Signed channel manifest tag and CLI version do not match."
   case "$CHANNEL_STARTER_VERSION" in *-SNAPSHOT) ;; *) fail "Signed snapshot channel requires a SNAPSHOT starter version." ;; esac
   printf '%s\n' "$CHANNEL_RELEASE_MANIFEST_SHA" | grep -Eq '^[0-9a-f]{64}$' || fail "Signed channel manifest release digest is invalid."
+  printf '%s\n' "$CHANNEL_SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || fail "Signed channel manifest source commit is invalid."
 fi
 case "$VERSION" in v[0-9A-Za-z][0-9A-Za-z._-]*) ;; *) fail "Invalid or empty release tag: $VERSION" ;; esac
 EXPECTED_VERSION=${VERSION#v}
@@ -491,10 +511,13 @@ openssl dgst -sha256 -verify "$PUBLIC_KEY" -signature "$SIGNATURE_BINARY" "$MANI
 
 grep -Fq "\"releaseTag\": \"$VERSION\"" "$MANIFEST_FILE" || fail "Signed manifest release tag mismatch."
 grep -Fq "\"cliVersion\": \"$EXPECTED_VERSION\"" "$MANIFEST_FILE" || fail "Signed manifest CLI version mismatch."
+MANIFEST_SOURCE_COMMIT=$(manifest_string_value "$MANIFEST_FILE" commit)
+printf '%s\n' "$MANIFEST_SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || fail "Signed release manifest source provenance is invalid."
 if [ -n "$RESOLVED_CHANNEL" ]; then
   [ "$(manifest_string_value "$MANIFEST_FILE" channel)" = "$RESOLVED_CHANNEL" ] || fail "Signed release manifest channel mismatch."
   [ "$(manifest_starter_version "$MANIFEST_FILE")" = "$CHANNEL_STARTER_VERSION" ] || fail "Signed release manifest starter version mismatch."
   [ "$(sha256_file "$MANIFEST_FILE")" = "$CHANNEL_RELEASE_MANIFEST_SHA" ] || fail "Signed release manifest digest does not match the signed channel."
+  [ "$MANIFEST_SOURCE_COMMIT" = "$CHANNEL_SOURCE_COMMIT" ] || fail "Signed release manifest source commit does not match the signed channel."
 fi
 grep -Fq '"required": true' "$MANIFEST_FILE" || fail "Signed manifest trust contract is missing."
 grep -Fq '"algorithm": "RSA-3072-SHA256"' "$MANIFEST_FILE" || fail "Signed manifest trust algorithm is unsupported."
