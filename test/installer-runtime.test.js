@@ -246,7 +246,7 @@ function createPosixHarness(temp, architecture = posixArchitecture, system = pos
   writeShim('ldd', 'echo "ldd (GNU libc) 2.31"');
   writeShim('getconf', 'echo "glibc 2.31"');
   writeShim('codesign', 'exit 0');
-  return { shimDir, installDir };
+  return { shimDir: fs.realpathSync(shimDir), installDir: fs.realpathSync(installDir) };
 }
 
 function posixInstallerEnv(base, harness, publicKeyPath, version = '') {
@@ -911,7 +911,7 @@ test('POSIX installer performs lifecycle and preserves the existing binary for t
 
   async function assertPreserved(label, handler, releaseFiles, options = {}) {
     for (let iteration = 1; iteration <= faultRepeats; iteration += 1) {
-      const harness = createPosixHarness(path.join(temp, `${label}-${iteration}`), options.architecture || 'x86_64');
+      const harness = createPosixHarness(path.join(temp, `${label}-${iteration}`), options.architecture || posixArchitecture);
       const installed = path.join(harness.installDir, 'contexa');
       fs.writeFileSync(installed, oldBinary, { mode: 0o755 });
       const before = sha256(fs.readFileSync(installed));
