@@ -250,8 +250,11 @@ function createPosixHarness(temp, architecture = posixArchitecture, system = pos
 
 function posixInstallerEnv(base, harness, publicKeyPath, version = '') {
   const posixShimDir = toPosixPath(harness.shimDir);
+  const executablePath = process.platform === 'win32'
+    ? `${posixShimDir}:/mingw64/bin:/usr/bin`
+    : `${posixShimDir}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`;
   return {
-    PATH: `${posixShimDir}:/mingw64/bin:/usr/bin`,
+    PATH: executablePath,
     MSYS2_ENV_CONV_EXCL: 'PATH',
     HOME: toPosixPath(path.dirname(harness.installDir)),
     CONTEXA_VERSION: version ? `v${version}` : '',
