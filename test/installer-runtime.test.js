@@ -271,9 +271,9 @@ function posixInstallerEnv(base, harness, publicKeyPath, version = '') {
   };
 }
 
-function runPosixInstaller(env) {
+function runPosixInstaller(env, installer = sh) {
   const quotedPath = env.PATH.replace(/'/g, `'"'"'`);
-  const scriptPath = toPosixPath(sh).replace(/'/g, `'"'"'`);
+  const scriptPath = toPosixPath(installer).replace(/'/g, `'"'"'`);
   return run(gitSh, ['-c', `PATH='${quotedPath}'; export PATH; exec '${scriptPath}'`], env);
 }
 
@@ -610,8 +610,8 @@ test('PowerShell installer recovers every persisted process-termination state wi
     }
   }
 });
-test('PowerShell installer automatically recovers after an actual process termination at DOWNLOADED',
-  { skip: process.platform !== 'win32', timeout: 300000 }, async (t) => {
+test('PowerShell installer recovers after actual process termination at every durable replacement state',
+  { skip: process.platform !== 'win32', timeout: 900000 }, async (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-kill-win-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 3072 });
@@ -620,54 +620,70 @@ test('PowerShell installer automatically recovers after an actual process termin
   const oldBytes = buildWindowsCli(path.join(temp, 'old.exe'), '8.0.0-old');
   const newBytes = buildWindowsCli(path.join(temp, 'new.exe'), version);
   const files = createRelease(keys, version, 'windows', newBytes);
+  const installerSource = fs.readFileSync(ps1, 'utf8');
+  const states = ['DOWNLOADED', 'VERIFIED', 'OLD_MOVED', 'NEW_MOVED', 'SMOKE_PASSED'];
 
-  for (let iteration = 1; iteration <= faultRepeats; iteration += 1) {
-    const installDir = path.join(temp, `bin-${iteration}`);
-    fs.mkdirSync(installDir);
-    const finalPath = path.join(installDir, 'contexa.exe');
-    const markerPath = `${finalPath}.install-transaction.json`;
-    fs.writeFileSync(finalPath, oldBytes);
+  for (const state of states) {
+    const stateLines = installerSource.split(/\r?\n/)
+      .filter((line) => line.includes(`Write-InstallerTransaction $markerPath '${state}'`));
+    assert.equal(stateLines.length, 1, `${state} must have one durable transaction write`);
+    const stateLine = stateLines[0];
+    const pausedInstaller = path.join(temp, `install-${state.toLowerCase()}.ps1`);
+    fs.writeFileSync(pausedInstaller, installerSource.replace(stateLine,
+      `${stateLine}\n        if ($env:CONTEXA_TEST_PAUSE_AFTER_STATE -eq '${state}') { Start-Sleep -Seconds 30 }`));
 
-    await withServer((req, res) => {
-      const pathname = new URL(req.url, 'http://localhost').pathname;
-      if (pathname.endsWith('.sha256')) return;
-      const value = files.get(pathname);
-      if (!value) { res.statusCode = 404; res.end('not found'); return; }
-      res.statusCode = 200;
-      res.end(value);
-    }, async (base) => {
-      const child = spawn(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1], {
-        env: {
-          ...process.env,
-          ...windowsInstallerEnv(base, installDir, version, xml),
-          CONTEXA_HTTP_TOTAL_TIMEOUT_SEC: '30',
-        },
-        windowsHide: true,
-      });
-      let observed = false;
-      for (let attempt = 0; attempt < 200; attempt += 1) {
-        if (fs.existsSync(markerPath)) {
-          const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
-          if (marker.state === 'DOWNLOADED') { observed = true; break; }
+    for (let iteration = 1; iteration <= faultRepeats; iteration += 1) {
+      const installDir = path.join(temp, `${state.toLowerCase()}-${iteration}`);
+      fs.mkdirSync(installDir);
+      const finalPath = path.join(installDir, 'contexa.exe');
+      const backupPath = `${finalPath}.previous`;
+      const markerPath = `${finalPath}.install-transaction.json`;
+      fs.writeFileSync(finalPath, oldBytes);
+
+      await withServer(releaseHandler(files), async (base) => {
+        const child = spawn(powershell,
+          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', pausedInstaller], {
+            env: {
+              ...process.env,
+              ...windowsInstallerEnv(base, installDir, version, xml),
+              CONTEXA_TEST_PAUSE_AFTER_STATE: state,
+            },
+            windowsHide: true,
+          });
+        let output = '';
+        child.stdout.on('data', (chunk) => { output += chunk; });
+        child.stderr.on('data', (chunk) => { output += chunk; });
+        const exited = new Promise((resolve) => child.once('exit', resolve));
+        let observed = false;
+        for (let attempt = 0; attempt < 1000; attempt += 1) {
+          if (fs.existsSync(markerPath)) {
+            try {
+              const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+              if (marker.state === state) { observed = true; break; }
+            } catch {
+              // Atomic marker replacement can briefly race the reader; retry the exact state.
+            }
+          }
+          if (child.exitCode !== null) break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
         }
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      assert.equal(observed, true,
-        `DOWNLOADED marker must be durable before termination, iteration ${iteration}`);
-      child.kill();
-      await new Promise((resolve) => child.once('exit', resolve));
-    });
+        if (child.exitCode === null) child.kill();
+        await exited;
+        assert.equal(observed, true,
+          `${state}/${iteration} marker must be durable before actual termination. ${output}`);
 
-    assert.equal(sha256(fs.readFileSync(finalPath)), sha256(oldBytes));
-    assert.equal(fs.existsSync(markerPath), true);
-    await withServer(releaseHandler(files), async (base) => {
-      const recovered = await runWindowsInstaller(windowsInstallerEnv(base, installDir, version, xml));
-      assert.equal(recovered.code, 0, recovered.stderr || recovered.stdout);
-    });
-    assert.equal(spawnSync(finalPath, ['--version'], { encoding: 'utf8' }).stdout.trim(), version);
-    assert.equal(fs.existsSync(markerPath), false);
+        const recovered = await runWindowsInstaller(windowsInstallerEnv(base, installDir, version, xml));
+        assert.equal(recovered.code, 0, recovered.stderr || recovered.stdout);
+      });
+
+      assert.equal(spawnSync(finalPath, ['--version'], { encoding: 'utf8' }).stdout.trim(), version);
+      assert.equal(fs.existsSync(markerPath), false, `${state}/${iteration} marker must be cleared`);
+      assert.equal(sha256(fs.readFileSync(backupPath)), sha256(oldBytes),
+        `${state}/${iteration} must preserve the rollback binary`);
+    }
   }
 });
+
 test('PowerShell installer handles an update while the existing CLI is running without losing a healthy binary',
   { skip: process.platform !== 'win32', timeout: 300000 }, async (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-running-win-'));
@@ -852,6 +868,75 @@ test('POSIX installer recovers every persisted process-termination state without
     }
   }
 });
+test('POSIX installer recovers after actual process termination at every durable replacement state',
+  { skip: process.platform === 'win32', timeout: 900000 }, async (t) => {
+  assert.notEqual(process.getuid?.(), 0, 'POSIX acceptance must run as a non-root user');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-kill-posix-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 3072 });
+  const publicKeyPath = path.join(temp, 'public.pem');
+  fs.writeFileSync(publicKeyPath, keys.publicKey.export({ type: 'spki', format: 'pem' }));
+  const version = '9.9.27-new';
+  const oldBytes = buildPosixCli('8.0.0-old');
+  const newBytes = buildPosixCli(version);
+  const files = createRelease(keys, version, posixReleasePlatform, newBytes);
+  const installerSource = fs.readFileSync(sh, 'utf8');
+  const states = ['DOWNLOADED', 'VERIFIED', 'OLD_MOVED', 'NEW_MOVED', 'SMOKE_PASSED'];
+
+  for (const state of states) {
+    const stateNeedle = `write_installer_transaction ${state}`;
+    assert.equal(installerSource.split(stateNeedle).length - 1, 1,
+      `${state} must have one durable transaction write`);
+    const pausedInstaller = path.join(temp, `install-${state.toLowerCase()}.sh`);
+    fs.writeFileSync(pausedInstaller, installerSource.replace(stateNeedle,
+      `${stateNeedle}\n[ "\${CONTEXA_TEST_PAUSE_AFTER_STATE:-}" = ${state} ] && sleep 30`), { mode: 0o755 });
+
+    for (let iteration = 1; iteration <= faultRepeats; iteration += 1) {
+      const harness = createPosixHarness(path.join(temp, `${state.toLowerCase()}-${iteration}`));
+      const finalPath = path.join(harness.installDir, 'contexa');
+      const backupPath = `${finalPath}.previous`;
+      const markerPath = `${finalPath}.install-transaction`;
+      fs.writeFileSync(finalPath, oldBytes, { mode: 0o755 });
+
+      await withServer(releaseHandler(files), async (base) => {
+        const env = posixInstallerEnv(base, harness, publicKeyPath, version);
+        const quotedPath = env.PATH.replace(/'/g, `'"'"'`);
+        const scriptPath = toPosixPath(pausedInstaller).replace(/'/g, `'"'"'`);
+        const child = spawn(gitSh, ['-c', `PATH='${quotedPath}'; export PATH; exec '${scriptPath}'`], {
+          env: { ...process.env, ...env, CONTEXA_TEST_PAUSE_AFTER_STATE: state },
+          windowsHide: true,
+        });
+        let output = '';
+        child.stdout.on('data', (chunk) => { output += chunk; });
+        child.stderr.on('data', (chunk) => { output += chunk; });
+        const exited = new Promise((resolve) => child.once('exit', resolve));
+        let observed = false;
+        for (let attempt = 0; attempt < 1000; attempt += 1) {
+          if (fs.existsSync(markerPath)) {
+            const markerState = fs.readFileSync(markerPath, 'utf8').split(/\r?\n/)
+              .find((line) => line.startsWith('STATE='));
+            if (markerState === `STATE=${state}`) { observed = true; break; }
+          }
+          if (child.exitCode !== null) break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        if (child.exitCode === null) child.kill('SIGKILL');
+        await exited;
+        assert.equal(observed, true,
+          `${state}/${iteration} marker must be durable before actual termination. ${output}`);
+
+        const recovered = await runPosixInstaller(posixInstallerEnv(base, harness, publicKeyPath, version));
+        assert.equal(recovered.code, 0, recovered.stderr || recovered.stdout);
+      });
+
+      assert.equal(spawnSync(gitSh, [toPosixPath(finalPath), '--version'], { encoding: 'utf8' }).stdout.trim(), version);
+      assert.equal(fs.existsSync(markerPath), false, `${state}/${iteration} marker must be cleared`);
+      assert.equal(sha256(fs.readFileSync(backupPath)), sha256(oldBytes),
+        `${state}/${iteration} must preserve the rollback binary`);
+    }
+  }
+});
+
 test('POSIX installer performs lifecycle and preserves the existing binary for the full fault matrix',
   { skip: process.platform === 'win32', timeout: 600000 }, async (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-posix-matrix-'));
