@@ -246,8 +246,8 @@ function Get-TargetRelease {
     if ($version -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$' -or $cliVersion -ne $version.Substring(1)) {
         throw 'Signed channel manifest tag and CLI version do not match.'
     }
-    if (-not $starterVersion.EndsWith('-SNAPSHOT')) {
-        throw 'Signed snapshot channel requires a SNAPSHOT starter version.'
+    if ($starterVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+        throw 'Signed channel manifest starter version is invalid.'
     }
     if ($releaseManifestSha256 -notmatch '^[0-9a-f]{64}$') {
         throw 'Signed channel manifest release digest is invalid.'

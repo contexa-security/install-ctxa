@@ -67,7 +67,7 @@ function createRelease(keys, version, platform, assetBytes, options = {}) {
     starter: {
       groupId: 'ai.ctxa',
       artifactId: 'spring-boot-starter-contexa',
-      version: options.releaseStarterVersion || '0.1.0-SNAPSHOT',
+      version: options.releaseStarterVersion || '0.1.0',
     },
     ...(options.omitSource ? {} : {
       source: {
@@ -100,7 +100,7 @@ function createChannel(keys, version, options = {}) {
     channel: options.channel || 'snapshot',
     releaseTag: options.releaseTag || `v${version}`,
     cliVersion: options.cliVersion || version,
-    starterVersion: options.starterVersion || '0.1.0-SNAPSHOT',
+    starterVersion: options.starterVersion || '0.1.0',
     sourceCommit: options.sourceCommit || 'a'.repeat(40),
     releaseManifestSha256: options.releaseManifestSha256 || '0'.repeat(64),
   }, null, 2)}\n`);
@@ -548,7 +548,8 @@ test('PowerShell installer resolves the signed snapshot channel and rejects chan
 
   await assertChannelFailure('channel-cli-mismatch', {}, { cliVersion: '9.9.5-other' });
   await assertChannelFailure('release-tag-mismatch', { releaseTag: 'v9.9.5-other' }, {});
-  await assertChannelFailure('starter-mismatch', { releaseStarterVersion: '0.2.0-SNAPSHOT' }, {});
+  await assertChannelFailure('starter-mismatch', { releaseStarterVersion: '0.2.0' }, {});
+  await assertChannelFailure('invalid-starter-version', {}, { starterVersion: 'latest' });
   await assertChannelFailure('asset-mismatch', { manifestDigest: '0'.repeat(64) }, {});
   await assertChannelFailure('channel-signature', {}, { signingKey: wrongKeys.privateKey });
   await assertChannelFailure('legacy-release-schema', { schemaVersion: 1, omitSource: true }, {});

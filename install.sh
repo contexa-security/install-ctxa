@@ -496,7 +496,7 @@ else
   CHANNEL_RELEASE_MANIFEST_SHA=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" releaseManifestSha256)
   [ "$RESOLVED_CHANNEL" = snapshot ] || fail "Signed channel manifest is not the snapshot channel."
   [ "$CHANNEL_CLI_VERSION" = "${VERSION#v}" ] || fail "Signed channel manifest tag and CLI version do not match."
-  case "$CHANNEL_STARTER_VERSION" in *-SNAPSHOT) ;; *) fail "Signed snapshot channel requires a SNAPSHOT starter version." ;; esac
+  printf '%s\n' "$CHANNEL_STARTER_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$' || fail "Signed channel manifest starter version is invalid."
   printf '%s\n' "$CHANNEL_RELEASE_MANIFEST_SHA" | grep -Eq '^[0-9a-f]{64}$' || fail "Signed channel manifest release digest is invalid."
   printf '%s\n' "$CHANNEL_SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || fail "Signed channel manifest source commit is invalid."
 fi
