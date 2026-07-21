@@ -9,6 +9,7 @@ const root = path.join(__dirname, '..');
 const ps1Path = path.join(root, 'install.ps1');
 const shPath = path.join(root, 'install.sh');
 const vercelPath = path.join(root, 'vercel.json');
+const packagePath = path.join(root, 'package.json');
 const api = require('../api/index');
 
 function read(file) {
@@ -91,6 +92,18 @@ test('install.sh enforces supported platforms, bounded download and atomic repla
   }
 });
 
+test('installers use semantic product versions and never request administrator elevation', () => {
+  const pkg = JSON.parse(read(packagePath));
+  const ps = read(ps1Path);
+  const sh = read(shPath);
+  assert.match(pkg.version, /^0\.[0-9]+\.[0-9]+$/);
+  assert.equal(pkg.version.includes('phase'), false);
+  assert.equal(/Start-Process[^\n]*-Verb\s+RunAs/i.test(ps), false);
+  assert.equal(/runas\.exe|IsInRole\s*\(.*Administrator/i.test(ps), false);
+  assert.equal(/(^|\s)sudo(\s|$)|(^|\s)su\s+-c/m.test(sh), false);
+  assert.match(ps, /LOCALAPPDATA/);
+  assert.match(sh, /\$HOME/);
+});
 test('installer files are written without UTF-8 BOM', () => {
   assert.notDeepEqual([...firstBytes(ps1Path, 3)], [0xef, 0xbb, 0xbf]);
   assert.notDeepEqual([...firstBytes(shPath, 3)], [0xef, 0xbb, 0xbf]);
