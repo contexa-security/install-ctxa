@@ -57,7 +57,7 @@ function createRelease(keys, version, platform, assetBytes, options = {}) {
     file,
     checksumFile: `${file}.sha256`,
     sha256: digest,
-    codeSignature: 'unsigned-snapshot',
+    codeSignature: platform === 'macos' ? 'adhoc-snapshot' : 'unsigned-snapshot',
   };
   const manifest = Buffer.from(`${JSON.stringify({
     schemaVersion: options.schemaVersion || 2,
@@ -245,6 +245,7 @@ function createPosixHarness(temp, architecture = posixArchitecture, system = pos
   writeShim('uname', 'case "${1:-}" in -s) echo ' + system + ' ;; -m) echo ' + architecture + ' ;; *) echo ' + system + ' ;; esac');
   writeShim('ldd', 'echo "ldd (GNU libc) 2.31"');
   writeShim('getconf', 'echo "glibc 2.31"');
+  writeShim('codesign', 'exit 0');
   return { shimDir, installDir };
 }
 
@@ -797,7 +798,6 @@ test('POSIX installer completes a signed Linux x64 installation against a fake r
 
 test('POSIX installer recovers every persisted process-termination state without deleting the legacy binary',
   { skip: process.platform === 'win32', timeout: 300000 }, async (t) => {
-  if (!fs.existsSync(gitSh)) return;
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-recovery-posix-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const oldBytes = buildPosixCli('8.0.0-old');
@@ -854,7 +854,6 @@ test('POSIX installer recovers every persisted process-termination state without
 });
 test('POSIX installer performs lifecycle and preserves the existing binary for the full fault matrix',
   { skip: process.platform === 'win32', timeout: 600000 }, async (t) => {
-  if (!fs.existsSync(gitSh)) return;
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-posix-matrix-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
   const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 3072 });
