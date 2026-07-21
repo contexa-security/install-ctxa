@@ -96,24 +96,24 @@ test('installer files are written without UTF-8 BOM', () => {
   assert.notDeepEqual([...firstBytes(shPath, 3)], [0xef, 0xbb, 0xbf]);
 });
 
-test('Vercel static-path headers match the dynamic endpoint contract', () => {
+test('Vercel routes explicit installer paths through the secured API contract', () => {
   const config = JSON.parse(read(vercelPath));
-  const stableRef = '23721bb0e7b561a7deb356656a7e2e3a879bc086';
+  const stableRef = '9fefa8fd8162024649aed2132b2770240fba2bc9';
   assert.equal(config.env.CONTEXA_STABLE_INSTALLER_REF, stableRef);
+  assert.equal(config.redirects, undefined,
+    'direct redirects bypass the API response security headers');
+  assert.ok(config.rewrites.some(entry =>
+    entry.source === '/(.*)' && entry.destination === '/api'));
   for (const route of ['/install.ps1', '/install.sh']) {
-    const redirect = config.redirects.find(candidate => candidate.source === route);
-    assert.ok(redirect, `missing stable-channel redirect for ${route}`);
-    assert.equal(redirect.destination, `https://raw.githubusercontent.com/contexa-security/install-ctxa/${stableRef}${route}`);
-    assert.equal(redirect.permanent, false);
     const entry = config.headers.find(candidate => candidate.source === route);
     assert.ok(entry, `missing Vercel header contract for ${route}`);
-    const headers = Object.fromEntries(entry.headers.map(header => [header.key.toLowerCase(), header.value]));
+    const headers = Object.fromEntries(
+      entry.headers.map(header => [header.key.toLowerCase(), header.value]));
     assert.equal(headers['content-type'], 'text/plain; charset=utf-8');
     assert.equal(headers['cache-control'], 'no-store');
     assert.equal(headers['x-content-type-options'], 'nosniff');
   }
 });
-
 test('api prioritizes explicit paths and exposes immutable version URLs', () => {
   function invoke(url, ua = '') {
     const headers = {};
@@ -143,17 +143,21 @@ test('api prioritizes explicit paths and exposes immutable version URLs', () => 
   const immutable = invoke('/v9.9.9-installer-test/install.ps1');
   assert.equal(immutable.statusCode, 302);
   assert.equal(immutable.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/v9.9.9-installer-test/install.ps1');
+  assert.equal(immutable.headers['content-type'], 'text/plain; charset=utf-8');
   assert.equal(immutable.headers['cache-control'], 'public, max-age=31536000, immutable');
+  assert.equal(immutable.headers['x-content-type-options'], 'nosniff');
   const caseSensitiveTag = invoke('/v9.9.9-Installer-Test/install.sh');
   assert.equal(caseSensitiveTag.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/v9.9.9-Installer-Test/install.sh');
 
   const originalStableRef = process.env.CONTEXA_STABLE_INSTALLER_REF;
   try {
-    process.env.CONTEXA_STABLE_INSTALLER_REF = '23721bb0e7b561a7deb356656a7e2e3a879bc086';
+    process.env.CONTEXA_STABLE_INSTALLER_REF = '9fefa8fd8162024649aed2132b2770240fba2bc9';
     const stable = invoke('/', 'WindowsPowerShell/5.1');
     assert.equal(stable.statusCode, 302);
-    assert.equal(stable.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/23721bb0e7b561a7deb356656a7e2e3a879bc086/install.ps1');
+    assert.equal(stable.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/9fefa8fd8162024649aed2132b2770240fba2bc9/install.ps1');
+    assert.equal(stable.headers['content-type'], 'text/plain; charset=utf-8');
     assert.equal(stable.headers['cache-control'], 'no-store');
+    assert.equal(stable.headers['x-content-type-options'], 'nosniff');
   } finally {
     if (originalStableRef === undefined) delete process.env.CONTEXA_STABLE_INSTALLER_REF;
     else process.env.CONTEXA_STABLE_INSTALLER_REF = originalStableRef;
