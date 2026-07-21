@@ -17,6 +17,7 @@ module.exports = (req, res) => {
     const fileName = immutableMatch[2].toLowerCase();
     res.statusCode = 302;
     res.setHeader('Location', `https://raw.githubusercontent.com/contexa-security/install-ctxa/${tag}/${fileName}`);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send('');
@@ -43,6 +44,7 @@ module.exports = (req, res) => {
     }
     res.statusCode = 302;
     res.setHeader('Location', `https://raw.githubusercontent.com/contexa-security/install-ctxa/${stableRef}/${fileName}`);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send('');
