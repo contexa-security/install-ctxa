@@ -45,9 +45,26 @@ msg() {
 }
 
 fail() {
-  printf '%s\n' "$(msg fail_prefix): $1" >&2
+  if [ "$INSTALL_LANG" = ko ]; then
+    printf '%s\n' "$(msg fail_prefix) [INSTALLER_OPERATION_FAILED]: 오류 코드를 확인하고 원인을 수정한 뒤 같은 명령을 다시 실행하세요." >&2
+  else
+    printf '%s\n' "$(msg fail_prefix) [INSTALLER_OPERATION_FAILED]: $1" >&2
+  fi
   printf '%s\n' "$(msg preserved)" >&2
   exit 1
+}
+
+download_failure() {
+  reason=$1
+  attempts=$2
+  total=$3
+  url=$4
+  guidance=$5
+  if [ "$INSTALL_LANG" = ko ]; then
+    printf '%s\n' "HTTP 다운로드 실패 [$reason]: $attempts회 시도, 제한시간 ${total}초, 주소 $url. 같은 설치 명령을 다시 실행하세요." >&2
+  else
+    printf '%s\n' "HTTP download failed [$reason] after $attempts attempt(s) within $total second(s): $url. $guidance" >&2
+  fi
 }
 
 positive_int() {
@@ -68,9 +85,50 @@ require_tool() {
 }
 
 download() {
-  curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TOTAL_TIMEOUT" \
-    --retry "$RETRIES" --retry-max-time "$TOTAL_TIMEOUT" --retry-delay 1 \
-    --retry-connrefused "$1" -o "$2"
+  download_url=$1
+  download_target=$2
+  download_started=$(date +%s)
+  download_attempt=1
+  while :; do
+    download_now=$(date +%s)
+    download_remaining=$((TOTAL_TIMEOUT - download_now + download_started))
+    if [ "$download_remaining" -le 0 ]; then
+      download_failure TIMEOUT "$download_attempt" "$TOTAL_TIMEOUT" "$download_url" 'Retry the same installer.'
+      return 1
+    fi
+    download_status=0
+    download_http=$(curl -sS -L --connect-timeout "$CONNECT_TIMEOUT" --max-time "$download_remaining" -o "$download_target" -w '%{http_code}' "$download_url") || download_status=$?
+    case "$download_http" in 2??)
+      [ "$download_status" -eq 0 ] && return 0
+      ;;
+    esac
+    download_retryable=0
+    case "$download_http" in
+      429) download_reason=HTTP_429_RATE_LIMIT; download_retryable=1 ;;
+      408) download_reason=HTTP_408_TIMEOUT; download_retryable=1 ;;
+      5??) download_reason=HTTP_5XX; download_retryable=1 ;;
+      4??) download_reason="HTTP_$download_http" ;;
+      *)
+        case "$download_status" in
+          28) download_reason=TIMEOUT; download_retryable=1 ;;
+          7|18|52|55|56) download_reason=CONNECTION_RESET; download_retryable=1 ;;
+          *) download_reason="CURL_$download_status" ;;
+        esac
+        ;;
+    esac
+    rm -f "$download_target"
+    if [ "$download_retryable" -ne 1 ] || [ "$download_attempt" -gt "$RETRIES" ]; then
+      case "$download_reason" in
+        HTTP_429_RATE_LIMIT) download_guidance='Retry the same installer after the server retry window.' ;;
+        TIMEOUT|CONNECTION_RESET|HTTP_408_TIMEOUT|HTTP_5XX) download_guidance='The endpoint was temporarily unavailable. Retry the same installer.' ;;
+        *) download_guidance='Check the URL and trust configuration before retrying the same installer.' ;;
+      esac
+    download_failure "$download_reason" "$download_attempt" "$TOTAL_TIMEOUT" "$download_url" "$download_guidance"
+      return 1
+    fi
+    download_attempt=$((download_attempt + 1))
+    sleep 1
+  done
 }
 
 resolve_install_dir() {
@@ -220,6 +278,101 @@ smoke_binary() {
   "$1" >/dev/null 2>&1 || return 1
 }
 
+smoke_any_binary() {
+  [ -f "$1" ] || return 1
+  candidate_version=$(reported_version "$1")
+  [ -n "$candidate_version" ] || return 1
+  "$1" --help >/dev/null 2>&1 || return 1
+  "$1" >/dev/null 2>&1 || return 1
+}
+
+transaction_value() {
+  transaction_key=$1
+  while IFS= read -r transaction_line; do
+    case "$transaction_line" in
+      "$transaction_key="*) printf '%s' "${transaction_line#*=}"; return 0 ;;
+    esac
+  done <"$MARKER_PATH"
+  return 1
+}
+
+clear_installer_transaction() {
+  rm -f "$MARKER_PATH" "$MARKER_PATH.writing"
+}
+
+write_installer_transaction() {
+  transaction_state=$1
+  case "$transaction_state" in
+    DOWNLOADED|VERIFIED|OLD_MOVED|NEW_MOVED|SMOKE_PASSED) ;;
+    *) fail "Unsupported installer transaction state: $transaction_state" ;;
+  esac
+  case "$INSTALL_PATH$BACKUP_PATH$NEW_BINARY$EXPECTED_VERSION" in
+    *'
+'*) fail "Installer transaction values must not contain newlines." ;;
+  esac
+  {
+    printf '%s\n' 'SCHEMA_VERSION=1'
+    printf 'STATE=%s\n' "$transaction_state"
+    printf 'FINAL_PATH=%s\n' "$INSTALL_PATH"
+    printf 'BACKUP_PATH=%s\n' "$BACKUP_PATH"
+    printf 'NEW_PATH=%s\n' "$NEW_BINARY"
+    printf 'EXPECTED_VERSION=%s\n' "$EXPECTED_VERSION"
+    printf 'HAD_ORIGINAL=%s\n' "$HAD_ORIGINAL"
+  } >"$MARKER_PATH.writing"
+  mv "$MARKER_PATH.writing" "$MARKER_PATH"
+}
+
+recover_installer_transaction() {
+  [ -f "$MARKER_PATH" ] || { rm -f "$MARKER_PATH.writing"; return 0; }
+  transaction_schema=$(transaction_value SCHEMA_VERSION || true)
+  transaction_state=$(transaction_value STATE || true)
+  transaction_final=$(transaction_value FINAL_PATH || true)
+  transaction_backup=$(transaction_value BACKUP_PATH || true)
+  transaction_new=$(transaction_value NEW_PATH || true)
+  transaction_version=$(transaction_value EXPECTED_VERSION || true)
+  transaction_new_dir=${transaction_new%/*}
+  transaction_new_name=${transaction_new##*/}
+  case "$transaction_state" in
+    DOWNLOADED|VERIFIED|OLD_MOVED|NEW_MOVED|SMOKE_PASSED) ;;
+    *) fail "Installer transaction marker has an unsupported state and was retained: $MARKER_PATH" ;;
+  esac
+  case "$transaction_new_name" in .contexa.new.*) ;; *) fail "Installer transaction marker has an invalid new-binary name and was retained: $MARKER_PATH" ;; esac
+  [ "$transaction_schema" = 1 ] &&
+    [ "$transaction_final" = "$INSTALL_PATH" ] &&
+    [ "$transaction_backup" = "$BACKUP_PATH" ] &&
+    [ "$transaction_new_dir" = "$INSTALL_DIR" ] &&
+    [ -n "$transaction_version" ] ||
+    fail "Installer transaction marker violates the exact path contract and was retained: $MARKER_PATH"
+
+  if smoke_any_binary "$INSTALL_PATH"; then
+    [ -f "$transaction_new" ] && rm -f "$transaction_new"
+    clear_installer_transaction
+    return 0
+  fi
+
+  case "$transaction_state" in
+    VERIFIED|OLD_MOVED)
+      if smoke_binary "$transaction_new" "$transaction_version"; then
+        if [ -e "$INSTALL_PATH" ]; then mv "$INSTALL_PATH" "$INSTALL_PATH.failed.$$"; fi
+        mv "$transaction_new" "$INSTALL_PATH"
+        chmod 755 "$INSTALL_PATH"
+        smoke_binary "$INSTALL_PATH" "$transaction_version" || fail "Recovered new binary failed smoke verification; transaction was retained."
+        clear_installer_transaction
+        return 0
+      fi
+      ;;
+  esac
+
+  if smoke_any_binary "$BACKUP_PATH"; then
+    if [ -e "$INSTALL_PATH" ]; then mv "$INSTALL_PATH" "$INSTALL_PATH.failed.$$"; fi
+    mv "$BACKUP_PATH" "$INSTALL_PATH"
+    [ -f "$transaction_new" ] && rm -f "$transaction_new"
+    clear_installer_transaction
+    return 0
+  fi
+  fail "Installer recovery found no verified healthy old or new binary. The marker and files were retained: $MARKER_PATH"
+}
+
 profile_path() {
   if [ -n "${CONTEXA_SHELL_PROFILE:-}" ]; then printf '%s' "$CONTEXA_SHELL_PROFILE"; else printf '%s' "$HOME/.profile"; fi
 }
@@ -258,10 +411,14 @@ remove_profile_block() {
 }
 
 INSTALL_DIR=$(resolve_install_dir)
+mkdir -p "$INSTALL_DIR" || fail "Could not create install directory: $INSTALL_DIR."
+INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd -P)
 INSTALL_PATH="$INSTALL_DIR/contexa"
 BACKUP_PATH="$INSTALL_PATH.previous"
+MARKER_PATH="$INSTALL_PATH.install-transaction"
 ACTION="${CONTEXA_INSTALL_ACTION:-install}"
 
+recover_installer_transaction
 case "$ACTION" in
   rollback)
     [ -f "$BACKUP_PATH" ] || fail "No previous Contexa binary exists at $BACKUP_PATH."
@@ -291,7 +448,6 @@ require_tool curl
 require_tool awk
 require_tool openssl
 detect_platform
-mkdir -p "$INSTALL_DIR" || fail "Could not create install directory: $INSTALL_DIR."
 [ -w "$INSTALL_DIR" ] || fail "Install directory is not writable: $INSTALL_DIR."
 
 STATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/contexa-installer.XXXXXX")
@@ -304,7 +460,16 @@ CHANNEL_SIGNATURE_BINARY="$STATE_DIR/channel-manifest.sig.bin"
 PUBLIC_KEY="$STATE_DIR/release-signing-public.pem"
 SIDECAR_FILE="$STATE_DIR/asset.sha256"
 NEW_BINARY=$(mktemp "$INSTALL_DIR/.contexa.new.XXXXXX")
-cleanup() { rm -rf "$STATE_DIR"; rm -f "$NEW_BINARY"; }
+REPLACEMENT_STARTED=0
+cleanup() {
+  rm -rf "$STATE_DIR"
+  if [ -f "$MARKER_PATH" ]; then
+    if [ "$REPLACEMENT_STARTED" = 0 ] || smoke_any_binary "$INSTALL_PATH"; then
+      clear_installer_transaction
+    fi
+  fi
+  [ -f "$MARKER_PATH" ] || rm -f "$NEW_BINARY"
+}
 trap cleanup EXIT HUP INT TERM
 
 DOWNLOAD_BASE="${CONTEXA_RELEASE_DOWNLOAD_BASE:-$DEFAULT_DOWNLOAD_BASE}"
@@ -313,6 +478,7 @@ if [ -n "${CONTEXA_VERSION:-}" ]; then
   VERSION=$CONTEXA_VERSION
   RESOLVED_CHANNEL=
   CHANNEL_STARTER_VERSION=
+  CHANNEL_SOURCE_COMMIT=
   CHANNEL_RELEASE_MANIFEST_SHA=
 else
   CHANNEL_MANIFEST_URL="${CONTEXA_CHANNEL_MANIFEST_URL:-$DEFAULT_CHANNEL_MANIFEST_URL}"
@@ -326,11 +492,13 @@ else
   VERSION=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" releaseTag)
   CHANNEL_CLI_VERSION=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" cliVersion)
   CHANNEL_STARTER_VERSION=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" starterVersion)
+  CHANNEL_SOURCE_COMMIT=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" sourceCommit)
   CHANNEL_RELEASE_MANIFEST_SHA=$(manifest_string_value "$CHANNEL_MANIFEST_FILE" releaseManifestSha256)
   [ "$RESOLVED_CHANNEL" = snapshot ] || fail "Signed channel manifest is not the snapshot channel."
   [ "$CHANNEL_CLI_VERSION" = "${VERSION#v}" ] || fail "Signed channel manifest tag and CLI version do not match."
   case "$CHANNEL_STARTER_VERSION" in *-SNAPSHOT) ;; *) fail "Signed snapshot channel requires a SNAPSHOT starter version." ;; esac
   printf '%s\n' "$CHANNEL_RELEASE_MANIFEST_SHA" | grep -Eq '^[0-9a-f]{64}$' || fail "Signed channel manifest release digest is invalid."
+  printf '%s\n' "$CHANNEL_SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || fail "Signed channel manifest source commit is invalid."
 fi
 case "$VERSION" in v[0-9A-Za-z][0-9A-Za-z._-]*) ;; *) fail "Invalid or empty release tag: $VERSION" ;; esac
 EXPECTED_VERSION=${VERSION#v}
@@ -343,10 +511,25 @@ openssl dgst -sha256 -verify "$PUBLIC_KEY" -signature "$SIGNATURE_BINARY" "$MANI
 
 grep -Fq "\"releaseTag\": \"$VERSION\"" "$MANIFEST_FILE" || fail "Signed manifest release tag mismatch."
 grep -Fq "\"cliVersion\": \"$EXPECTED_VERSION\"" "$MANIFEST_FILE" || fail "Signed manifest CLI version mismatch."
+if grep -Fq '"schemaVersion": 2' "$MANIFEST_FILE"; then
+  MANIFEST_SCHEMA=2
+elif grep -Fq '"schemaVersion": 1' "$MANIFEST_FILE"; then
+  MANIFEST_SCHEMA=1
+else
+  fail "Signed release manifest schema is unsupported."
+fi
+MANIFEST_SOURCE_REPOSITORY=$(manifest_string_value "$MANIFEST_FILE" repository)
+MANIFEST_SOURCE_COMMIT=$(manifest_string_value "$MANIFEST_FILE" commit)
+if [ "$MANIFEST_SCHEMA" = 2 ] || [ -n "$MANIFEST_SOURCE_REPOSITORY$MANIFEST_SOURCE_COMMIT" ]; then
+  [ "$MANIFEST_SOURCE_REPOSITORY" = contexa-security/contexa-cli ] || fail "Signed release manifest source provenance is invalid."
+  printf '%s\n' "$MANIFEST_SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || fail "Signed release manifest source provenance is invalid."
+fi
 if [ -n "$RESOLVED_CHANNEL" ]; then
+  [ "$MANIFEST_SCHEMA" = 2 ] || fail "Signed channel requires release manifest schema 2."
   [ "$(manifest_string_value "$MANIFEST_FILE" channel)" = "$RESOLVED_CHANNEL" ] || fail "Signed release manifest channel mismatch."
   [ "$(manifest_starter_version "$MANIFEST_FILE")" = "$CHANNEL_STARTER_VERSION" ] || fail "Signed release manifest starter version mismatch."
   [ "$(sha256_file "$MANIFEST_FILE")" = "$CHANNEL_RELEASE_MANIFEST_SHA" ] || fail "Signed release manifest digest does not match the signed channel."
+  [ "$MANIFEST_SOURCE_COMMIT" = "$CHANNEL_SOURCE_COMMIT" ] || fail "Signed release manifest source commit does not match the signed channel."
 fi
 grep -Fq '"required": true' "$MANIFEST_FILE" || fail "Signed manifest trust contract is missing."
 grep -Fq '"algorithm": "RSA-3072-SHA256"' "$MANIFEST_FILE" || fail "Signed manifest trust algorithm is unsupported."
@@ -364,6 +547,9 @@ if [ -f "$INSTALL_PATH" ] && [ "$(reported_version "$INSTALL_PATH")" = "$EXPECTE
 fi
 
 download "$RELEASE_BASE/$FILE" "$NEW_BINARY" || fail "Binary download failed within the configured timeout."
+HAD_ORIGINAL=0
+[ -f "$INSTALL_PATH" ] && HAD_ORIGINAL=1
+write_installer_transaction DOWNLOADED
 download "$RELEASE_BASE/$FILE.sha256" "$SIDECAR_FILE" || fail "Checksum download failed."
 SIDECAR_SHA=$(awk '{ print tolower($1); exit }' "$SIDECAR_FILE")
 ACTUAL_SHA=$(sha256_file "$NEW_BINARY")
@@ -374,22 +560,30 @@ smoke_binary "$NEW_BINARY" "$EXPECTED_VERSION" || fail "Downloaded binary versio
 if [ "$OS" = Darwin ]; then
   codesign --verify "$NEW_BINARY" >/dev/null 2>&1 || fail "macOS code-signature contract verification failed."
 fi
+write_installer_transaction VERIFIED
 
 OLD_MOVED=0
+REPLACEMENT_STARTED=1
 rm -f "$BACKUP_PATH"
 if [ -f "$INSTALL_PATH" ]; then mv "$INSTALL_PATH" "$BACKUP_PATH"; OLD_MOVED=1; fi
+write_installer_transaction OLD_MOVED
 if ! mv "$NEW_BINARY" "$INSTALL_PATH"; then
   [ "$OLD_MOVED" = 1 ] && mv "$BACKUP_PATH" "$INSTALL_PATH"
+  clear_installer_transaction
   fail "Atomic binary replacement failed; the previous CLI was restored."
 fi
+write_installer_transaction NEW_MOVED
 chmod 755 "$INSTALL_PATH"
 if ! smoke_binary "$INSTALL_PATH" "$EXPECTED_VERSION"; then
   rm -f "$INSTALL_PATH"
   [ "$OLD_MOVED" = 1 ] && mv "$BACKUP_PATH" "$INSTALL_PATH"
+  clear_installer_transaction
   fail "Final smoke verification failed; the previous CLI was restored."
 fi
+write_installer_transaction SMOKE_PASSED
 
 ensure_path
+clear_installer_transaction
 printf '%s\n' "Contexa $VERSION$(msg installed)$PLATFORM."
 printf '%s\n' "$(msg primary)" "  contexa init" "  contexa reset" "  contexa init --simulate" "  contexa reset --simulate"
 printf '%s\n' "$(msg immutable)$VERSION"

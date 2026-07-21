@@ -55,17 +55,29 @@ jobs:
         run: >-
           node -e "const f=require('fs'),c=require('child_process');const r=c.spawnSync(process.execPath,['--test','test/installer-runtime.test.js'],{encoding:'utf8',windowsHide:true});const out=(r.stdout||'')+(r.stderr||'');f.writeFileSync('installer-runtime.tap',out);process.stdout.write(out);process.exit(r.status===null?1:r.status)"
 
+      - name: Run the full installer fault matrix with PowerShell 7
+        if: runner.os == 'Windows'
+        env:
+          CONTEXA_TEST_POWERSHELL: pwsh.exe
+        run: >-
+          node -e "const f=require('fs'),c=require('child_process');const r=c.spawnSync(process.execPath,['--test','test/installer-runtime.test.js'],{encoding:'utf8',windowsHide:true});const out=(r.stdout||'')+(r.stderr||'');f.writeFileSync('installer-runtime-pwsh.tap',out);process.stdout.write(out);process.exit(r.status===null?1:r.status)"
+
+      - name: Run installer source and release-contract acceptance
+        run: node --test test/installers.test.js
+
       - name: Publish installer test failure detail
         if: failure()
         shell: bash
         run: |
-          node -e "const f=require('fs');const p='installer-runtime.tap';const s=f.existsSync(p)?f.readFileSync(p,'utf8').slice(-12000):'installer TAP output is missing';const e=s.replace(/%/g,'%25').replace(/\r/g,'%0D').replace(/\n/g,'%0A');console.log('::error file=test/installer-runtime.test.js,line=1,title=Installer runtime failure::'+e)"
+          node -e "const f=require('fs');const paths=['installer-runtime.tap','installer-runtime-pwsh.tap'];const s=paths.map(p=>f.existsSync(p)?p+'\n'+f.readFileSync(p,'utf8'):'').join('\n').slice(-12000)||'installer TAP output is missing';const e=s.replace(/%/g,'%25').replace(/\r/g,'%0D').replace(/\n/g,'%0A');console.log('::error file=test/installer-runtime.test.js,line=1,title=Installer runtime failure::'+e)"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: installer-runtime-evidence-${{ matrix.os }}
-          path: installer-runtime.tap
+          path: |
+            installer-runtime.tap
+            installer-runtime-pwsh.tap
 
       - name: Resolve current and previous prerelease tags
         env:
@@ -132,6 +144,9 @@ jobs:
           "$CONTEXA_INSTALL_DIR/contexa" init --yes --dir "$fixture"
           "$CONTEXA_INSTALL_DIR/contexa" reset --yes --dir "$fixture"
           test ! -f "$fixture/contexa/manifest.json"
+          CONTEXA_INSTALL_ACTION=uninstall sh ./install.sh
+          test ! -e "$CONTEXA_INSTALL_DIR/contexa"
+          test ! -e "$CONTEXA_INSTALL_DIR/contexa.previous"
 
       - name: Verify actual install, update, no-op, rollback and init/reset (Windows)
         if: runner.os == 'Windows'
@@ -174,3 +189,7 @@ jobs:
           & $binary init --yes --dir $fixture
           & $binary reset --yes --dir $fixture
           if (Test-Path -LiteralPath (Join-Path $fixture 'contexa\manifest.json')) { throw 'reset left manifest behind' }
+          $env:CONTEXA_INSTALL_ACTION = 'uninstall'
+          & .\install.ps1
+          if (Test-Path -LiteralPath $binary) { throw 'uninstall left the final binary behind' }
+          if (Test-Path -LiteralPath ($binary + '.previous')) { throw 'uninstall left the previous binary behind' }
