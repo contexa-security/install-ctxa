@@ -205,7 +205,7 @@ jobs:
             '@SpringBootApplication',
             'public class InstallerSmokeApplication {}'
           ) -join "`n") + "`n", $utf8)
-          & $binary init --yes --dir $fixture
+          & $binary init --yes --no-docker --dir $fixture
           & $binary reset --yes --dir $fixture
           if (Test-Path -LiteralPath (Join-Path $fixture 'contexa\manifest.json')) { throw 'reset left manifest behind' }
           $env:CONTEXA_INSTALL_ACTION = 'uninstall'
