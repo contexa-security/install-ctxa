@@ -8,6 +8,8 @@ const { spawnSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const ps1Path = path.join(root, 'install.ps1');
 const shPath = path.join(root, 'install.sh');
+const uninstallPs1Path = path.join(root, 'uninstall.ps1');
+const uninstallShPath = path.join(root, 'uninstall.sh');
 const vercelPath = path.join(root, 'vercel.json');
 const packagePath = path.join(root, 'package.json');
 const api = require('../api/index');
@@ -117,6 +119,20 @@ test('installers use semantic product versions and never request administrator e
 test('installer files are written without UTF-8 BOM', () => {
   assert.notDeepEqual([...firstBytes(ps1Path, 3)], [0xef, 0xbb, 0xbf]);
   assert.notDeepEqual([...firstBytes(shPath, 3)], [0xef, 0xbb, 0xbf]);
+  assert.notDeepEqual([...firstBytes(uninstallPs1Path, 3)], [0xef, 0xbb, 0xbf]);
+  assert.notDeepEqual([...firstBytes(uninstallShPath, 3)], [0xef, 0xbb, 0xbf]);
+});
+
+test('public uninstall entrypoints reuse the installer without leaking control state', () => {
+  const ps = read(uninstallPs1Path);
+  const sh = read(uninstallShPath);
+  assert.ok(ps.startsWith('#Requires -Version 5.1'));
+  assert.match(ps, /CONTEXA_INSTALL_ACTION = 'uninstall'/);
+  assert.match(ps, /https:\/\/install\.ctxa\.ai\/install\.ps1/);
+  assert.match(ps, /Remove-Item Env:CONTEXA_INSTALL_ACTION/);
+  assert.ok(sh.startsWith('#!/bin/sh'));
+  assert.match(sh, /CONTEXA_INSTALL_ACTION=uninstall sh/);
+  assert.match(sh, /https:\/\/install\.ctxa\.ai\/install\.sh/);
 });
 
 test('Vercel routes explicit installer paths through the secured API contract', () => {
@@ -127,7 +143,7 @@ test('Vercel routes explicit installer paths through the secured API contract', 
     'direct redirects bypass the API response security headers');
   assert.ok(config.rewrites.some(entry =>
     entry.source === '/(.*)' && entry.destination === '/api'));
-  for (const route of ['/install.ps1', '/install.sh']) {
+  for (const route of ['/install.ps1', '/install.sh', '/uninstall.ps1', '/uninstall.sh']) {
     const entry = config.headers.find(candidate => candidate.source === route);
     assert.ok(entry, `missing Vercel header contract for ${route}`);
     const headers = Object.fromEntries(
@@ -163,6 +179,14 @@ test('api prioritizes explicit paths and exposes immutable version URLs', () => 
   assert.ok(sh.body.startsWith('#!/bin/sh'));
   assert.equal(sh.headers['cache-control'], 'no-store');
 
+  const uninstallPs = invoke('/uninstall.ps1');
+  assert.ok(uninstallPs.body.startsWith('#Requires -Version 5.1'));
+  assert.match(uninstallPs.body, /CONTEXA_INSTALL_ACTION = 'uninstall'/);
+
+  const uninstallSh = invoke('/uninstall.sh', 'WindowsPowerShell/5.1');
+  assert.ok(uninstallSh.body.startsWith('#!/bin/sh'));
+  assert.match(uninstallSh.body, /CONTEXA_INSTALL_ACTION=uninstall sh/);
+
   const immutable = invoke('/v9.9.9-installer-test/install.ps1');
   assert.equal(immutable.statusCode, 302);
   assert.equal(immutable.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/v9.9.9-installer-test/install.ps1');
@@ -181,6 +205,9 @@ test('api prioritizes explicit paths and exposes immutable version URLs', () => 
     assert.equal(stable.headers['content-type'], 'text/plain; charset=utf-8');
     assert.equal(stable.headers['cache-control'], 'no-store');
     assert.equal(stable.headers['x-content-type-options'], 'nosniff');
+    const stableUninstall = invoke('/uninstall.ps1');
+    assert.equal(stableUninstall.statusCode, 200);
+    assert.match(stableUninstall.body, /CONTEXA_INSTALL_ACTION = 'uninstall'/);
   } finally {
     if (originalStableRef === undefined) delete process.env.CONTEXA_STABLE_INSTALLER_REF;
     else process.env.CONTEXA_STABLE_INSTALLER_REF = originalStableRef;

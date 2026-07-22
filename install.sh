@@ -24,7 +24,7 @@ msg() {
       primary) printf '%s' '주요 명령:' ;;
       immutable) printf '%s' '동일 버전 재설치: CONTEXA_VERSION=' ;;
       rollback) printf '%s' '롤백: CONTEXA_INSTALL_ACTION=rollback' ;;
-      uninstall) printf '%s' '제거: CONTEXA_INSTALL_ACTION=uninstall (프로젝트 reset은 별도)' ;;
+      uninstall) printf '%s' '제거: curl -fsSL https://install.ctxa.ai/uninstall.sh | sh (프로젝트 reset은 별도)' ;;
       unsupported_action) printf '%s' '지원하지 않는 CONTEXA_INSTALL_ACTION' ;;
     esac
   else
@@ -38,7 +38,7 @@ msg() {
       primary) printf '%s' 'Primary commands:' ;;
       immutable) printf '%s' 'Immutable reinstall: CONTEXA_VERSION=' ;;
       rollback) printf '%s' 'Rollback: CONTEXA_INSTALL_ACTION=rollback' ;;
-      uninstall) printf '%s' 'Uninstall: CONTEXA_INSTALL_ACTION=uninstall (project reset is separate)' ;;
+      uninstall) printf '%s' 'Uninstall: curl -fsSL https://install.ctxa.ai/uninstall.sh | sh (project reset is separate)' ;;
       unsupported_action) printf '%s' 'Unsupported CONTEXA_INSTALL_ACTION' ;;
     esac
   fi

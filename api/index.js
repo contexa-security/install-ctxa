@@ -7,6 +7,8 @@ const path = require('path');
 // Routing:
 //   /install.ps1, /win, /windows, PowerShell UA -> install.ps1
 //   /install.sh, /sh, /linux, /mac, everything else -> install.sh
+//   /uninstall.ps1 -> uninstall.ps1
+//   /uninstall.sh -> uninstall.sh
 module.exports = (req, res) => {
   const pathname = new URL(req.url || '/', 'https://install.ctxa.ai').pathname;
   const routePath = pathname.toLowerCase();
@@ -26,14 +28,22 @@ module.exports = (req, res) => {
 
   const explicitPs1 = routePath === '/install.ps1';
   const explicitSh = routePath === '/install.sh';
+  const explicitUninstallPs1 = routePath === '/uninstall.ps1';
+  const explicitUninstallSh = routePath === '/uninstall.sh';
   const windowsAlias = routePath === '/win' || routePath === '/windows';
   const shellAlias = routePath === '/sh' || routePath === '/linux' || routePath === '/mac';
   const wantsPs1 = explicitPs1
-    || (!explicitSh && !shellAlias && (windowsAlias || ua.includes('powershell') || ua.includes('windowspowershell')));
+    || (!explicitSh && !explicitUninstallSh && !shellAlias
+      && (windowsAlias || ua.includes('powershell') || ua.includes('windowspowershell')));
 
-  const fileName = wantsPs1 ? 'install.ps1' : 'install.sh';
+  const uninstallRoute = explicitUninstallPs1 || explicitUninstallSh;
+  const fileName = explicitUninstallPs1
+    ? 'uninstall.ps1'
+    : explicitUninstallSh
+      ? 'uninstall.sh'
+      : wantsPs1 ? 'install.ps1' : 'install.sh';
   const stableRef = process.env.CONTEXA_STABLE_INSTALLER_REF;
-  if (stableRef) {
+  if (stableRef && !uninstallRoute) {
     if (!/^(?:v[0-9A-Za-z][0-9A-Za-z._-]*|[0-9a-f]{40})$/.test(stableRef)) {
       res.statusCode = 503;
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');

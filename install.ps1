@@ -642,7 +642,7 @@ function Invoke-ContexaInstaller {
         Write-Host '    contexa reset --simulate'
         Write-Host ('  ' + (Select-InstallerText 'Immutable reinstall: set CONTEXA_VERSION=' '64+Z7J28IOuyhOyghCDsnqzshKTsuZg6IENPTlRFWEFfVkVSU0lPTj0=') + $version + (Select-InstallerText ' and run this installer again.' '7J2EIOyEpOygle2VmOqzoCDshKTsuZgg7ZSE66Gc6re4656o7J2EIOuLpOyLnCDsi6TtlontlZjshLjsmpQu'))
         Write-Host ('  ' + (Select-InstallerText 'Rollback: set CONTEXA_INSTALL_ACTION=rollback and run this installer.' '66Gk67CxOiBDT05URVhBX0lOU1RBTExfQUNUSU9OPXJvbGxiYWNr7J2EIOyEpOygle2VmOqzoCDshKTsuZgg7ZSE66Gc6re4656o7J2EIOyLpO2Wie2VmOyEuOyalC4='))
-        Write-Host ('  ' + (Select-InstallerText 'Uninstall: set CONTEXA_INSTALL_ACTION=uninstall and run this installer. Project reset is separate.' '7KCc6rGwOiBDT05URVhBX0lOU1RBTExfQUNUSU9OPXVuaW5zdGFsbOydhCDshKTsoJXtlZjqs6Ag7ISk7LmYIO2UhOuhnOq3uOueqOydhCDsi6TtlontlZjshLjsmpQuIO2UhOuhnOygne2KuCByZXNldOydgCDrs4Trj4TsnoXri4jri6Qu'))
+        Write-Host ('  ' + (Select-InstallerText 'Uninstall: irm https://install.ctxa.ai/uninstall.ps1 | iex (project reset is separate).' '7KCc6rGwOiBpcm0gaHR0cHM6Ly9pbnN0YWxsLmN0eGEuYWkvdW5pbnN0YWxsLnBzMSB8IGlleCAo7ZSE66Gc7KCd7Yq4IHJlc2V07J2AIOuzhOuPhCk='))
     } catch {
         if ($oldMoved -and -not (Test-Path -LiteralPath $finalPath) -and (Test-Path -LiteralPath $backupPath)) {
             [System.IO.File]::Move($backupPath, $finalPath)

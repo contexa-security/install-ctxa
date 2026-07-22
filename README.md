@@ -34,7 +34,8 @@ $ErrorActionPreference='Stop'; & ([scriptblock]::Create((Invoke-WebRequest https
 - 변경되지 않는 버전별 설치기: `https://install.ctxa.ai/<installer-tag>/install.sh` 또는 `install.ps1`
 - 고정 CLI 릴리스 설치: `CONTEXA_VERSION=<release-tag>`
 - 직전 정상 바이너리로 롤백: `CONTEXA_INSTALL_ACTION=rollback`
-- CLI 바이너리 제거: `CONTEXA_INSTALL_ACTION=uninstall`
+- Windows CLI 바이너리 제거: `irm https://install.ctxa.ai/uninstall.ps1 | iex`
+- Linux/macOS CLI 바이너리 제거: `curl -fsSL https://install.ctxa.ai/uninstall.sh | sh`
 - 사용자 프로젝트 원복: `contexa reset` — CLI 제거와 다른 작업입니다.
 
 동일 버전을 다시 실행하면 설치 바이너리를 교체하지 않습니다. 업데이트가 성공하면 직전 정상 바이너리를 `.previous`로 보존해 롤백 대상으로 사용합니다. 이전 경로에서 발견된 다른 `contexa` 바이너리는 자동으로 삭제하지 않고 경고만 출력합니다.
