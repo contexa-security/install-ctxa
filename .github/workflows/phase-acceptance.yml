@@ -14,6 +14,7 @@ jobs:
   installer-locale:
     name: Installer locale / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +53,9 @@ jobs:
           if ($errors.Count) { throw ($errors | Out-String) }
 
       - name: Run installer fault and locale acceptance
+        env:
+          CONTEXA_LIFECYCLE_REPEATS: '20'
+          CONTEXA_FAULT_REPEATS: '5'
         run: >-
           node -e "const f=require('fs'),c=require('child_process');const r=c.spawnSync(process.execPath,['--test','test/installer-runtime.test.js'],{encoding:'utf8',windowsHide:true});const out=(r.stdout||'')+(r.stderr||'');f.writeFileSync('installer-runtime.tap',out);process.stdout.write(out);process.exit(r.status===null?1:r.status)"
 
@@ -59,6 +63,8 @@ jobs:
         if: runner.os == 'Windows'
         env:
           CONTEXA_TEST_POWERSHELL: pwsh.exe
+          CONTEXA_LIFECYCLE_REPEATS: '20'
+          CONTEXA_FAULT_REPEATS: '5'
         run: >-
           node -e "const f=require('fs'),c=require('child_process');const r=c.spawnSync(process.execPath,['--test','test/installer-runtime.test.js'],{encoding:'utf8',windowsHide:true});const out=(r.stdout||'')+(r.stderr||'');f.writeFileSync('installer-runtime-pwsh.tap',out);process.stdout.write(out);process.exit(r.status===null?1:r.status)"
 
@@ -122,6 +128,7 @@ jobs:
           CONTEXA_SKIP_PATH_UPDATE: '1'
         run: |
           set -euo pipefail
+          test "$(id -u)" -ne 0
           expected_current="${CONTEXA_PHASE_TAG#v}"
           expected_previous="${CONTEXA_PREVIOUS_TAG#v}"
           CONTEXA_VERSION="$CONTEXA_PREVIOUS_TAG" sh ./install.sh
