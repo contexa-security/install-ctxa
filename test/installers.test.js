@@ -53,7 +53,7 @@ test('install.ps1 enforces the signed, bounded and atomic installation contract'
   assert.match(src, /\.new\.exe/);
   assert.match(src, /\[System\.IO\.File\]::Move\(\$temporaryPath, \$finalPath\)/);
   assert.match(src, /\.previous/);
-  assert.match(src, /CONTEXA_INSTALL_ACTION/);
+  assert.equal(src.includes('CONTEXA_INSTALL_ACTION'), false);
   assert.match(src, /CONTEXA_TRUSTED_PUBLIC_KEY_XML/);
   assert.match(src, /IsLoopback/);
   assert.match(src, /Test-BinarySmoke \$temporaryPath/);
@@ -93,7 +93,7 @@ test('install.sh enforces supported platforms, bounded download and atomic repla
   assert.match(src, /glibc 2\.28 or newer/);
   assert.match(src, /\.contexa\.new\.XXXXXX/);
   assert.match(src, /BACKUP_PATH="\$INSTALL_PATH\.previous"/);
-  assert.match(src, /CONTEXA_INSTALL_ACTION/);
+  assert.equal(src.includes('CONTEXA_INSTALL_ACTION'), false);
   assert.match(src, /CONTEXA_TRUSTED_PUBLIC_KEY_PATH/);
   assert.match(src, /loopback release server/);
   assert.match(src, /smoke_binary "\$NEW_BINARY"/);
@@ -127,11 +127,11 @@ test('public uninstall entrypoints reuse the installer without leaking control s
   const ps = read(uninstallPs1Path);
   const sh = read(uninstallShPath);
   assert.ok(ps.startsWith('#Requires -Version 5.1'));
-  assert.match(ps, /CONTEXA_INSTALL_ACTION = 'uninstall'/);
+  assert.match(ps, /-Action uninstall/);
   assert.match(ps, /https:\/\/install\.ctxa\.ai\/install\.ps1/);
-  assert.match(ps, /Remove-Item Env:CONTEXA_INSTALL_ACTION/);
+  assert.equal(ps.includes('CONTEXA_INSTALL_ACTION'), false);
   assert.ok(sh.startsWith('#!/bin/sh'));
-  assert.match(sh, /CONTEXA_INSTALL_ACTION=uninstall sh/);
+  assert.match(sh, /sh "\$installer_file" uninstall/);
   assert.match(sh, /https:\/\/install\.ctxa\.ai\/install\.sh/);
 });
 
@@ -181,11 +181,11 @@ test('api prioritizes explicit paths and exposes immutable version URLs', () => 
 
   const uninstallPs = invoke('/uninstall.ps1');
   assert.ok(uninstallPs.body.startsWith('#Requires -Version 5.1'));
-  assert.match(uninstallPs.body, /CONTEXA_INSTALL_ACTION = 'uninstall'/);
+  assert.match(uninstallPs.body, /-Action uninstall/);
 
   const uninstallSh = invoke('/uninstall.sh', 'WindowsPowerShell/5.1');
   assert.ok(uninstallSh.body.startsWith('#!/bin/sh'));
-  assert.match(uninstallSh.body, /CONTEXA_INSTALL_ACTION=uninstall sh/);
+  assert.match(uninstallSh.body, /sh "\$installer_file" uninstall/);
 
   const immutable = invoke('/v9.9.9-installer-test/install.ps1');
   assert.equal(immutable.statusCode, 302);
@@ -207,7 +207,7 @@ test('api prioritizes explicit paths and exposes immutable version URLs', () => 
     assert.equal(stable.headers['x-content-type-options'], 'nosniff');
     const stableUninstall = invoke('/uninstall.ps1');
     assert.equal(stableUninstall.statusCode, 200);
-    assert.match(stableUninstall.body, /CONTEXA_INSTALL_ACTION = 'uninstall'/);
+    assert.match(stableUninstall.body, /-Action uninstall/);
   } finally {
     if (originalStableRef === undefined) delete process.env.CONTEXA_STABLE_INSTALLER_REF;
     else process.env.CONTEXA_STABLE_INSTALLER_REF = originalStableRef;

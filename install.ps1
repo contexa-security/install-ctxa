@@ -1,6 +1,9 @@
 #Requires -Version 5.1
 
+param([string]$Action = 'install')
+
 & {
+$RequestedAction = if ([string]::IsNullOrWhiteSpace($Action)) { 'install' } else { $Action.Trim().ToLowerInvariant() }
 $DirectFileInvocation = -not [string]::IsNullOrWhiteSpace($PSCommandPath)
 $InstallerFailed = $false
 $ErrorActionPreference = 'Stop'
@@ -519,14 +522,14 @@ function Invoke-ContexaInstaller {
     $finalPath = Join-Path $installDir 'contexa.exe'
     $backupPath = $finalPath + '.previous'
     $markerPath = $finalPath + '.install-transaction.json'
-    $action = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_INSTALL_ACTION)) { 'install' } else { $env:CONTEXA_INSTALL_ACTION.Trim().ToLowerInvariant() }
+    $action = $RequestedAction
 
     if (-not (Test-Path -LiteralPath $installDir)) { New-Item -ItemType Directory -Path $installDir -Force | Out-Null }
     Invoke-InstallerTransactionRecovery $installDir $finalPath $backupPath $markerPath
     if ($action -eq 'rollback') { Invoke-Rollback $finalPath $backupPath; Ensure-CommandPath $installDir $finalPath; return }
     if ($action -eq 'uninstall') { Invoke-Uninstall $installDir $finalPath $backupPath; return }
     if ($action -ne 'install') {
-        throw ((Select-InstallerText 'Unsupported CONTEXA_INSTALL_ACTION' '7KeA7JuQ7ZWY7KeAIOyViuuKlCBDT05URVhBX0lOU1RBTExfQUNUSU9O') + ': ' + $action)
+        throw ((Select-InstallerText 'Unsupported installer action' '7KeA7JuQ7ZWY7KeAIOyViuuKlCDshKTsuZgg7J6R7JeF') + ': ' + $action)
     }
 
     Write-Host ('  ' + (Select-InstallerText 'Starting Contexa CLI installation.' 'Q29udGV4YSBDTEkg7ISk7LmY66W8IOyLnOyeke2VqeuLiOuLpC4='))
@@ -641,7 +644,7 @@ function Invoke-ContexaInstaller {
         Write-Host '    contexa init --simulate'
         Write-Host '    contexa reset --simulate'
         Write-Host ('  ' + (Select-InstallerText 'Immutable reinstall: set CONTEXA_VERSION=' '64+Z7J28IOuyhOyghCDsnqzshKTsuZg6IENPTlRFWEFfVkVSU0lPTj0=') + $version + (Select-InstallerText ' and run this installer again.' '7J2EIOyEpOygle2VmOqzoCDshKTsuZgg7ZSE66Gc6re4656o7J2EIOuLpOyLnCDsi6TtlontlZjshLjsmpQu'))
-        Write-Host ('  ' + (Select-InstallerText 'Rollback: set CONTEXA_INSTALL_ACTION=rollback and run this installer.' '66Gk67CxOiBDT05URVhBX0lOU1RBTExfQUNUSU9OPXJvbGxiYWNr7J2EIOyEpOygle2VmOqzoCDshKTsuZgg7ZSE66Gc6re4656o7J2EIOyLpO2Wie2VmOyEuOyalC4='))
+        Write-Host ('  ' + (Select-InstallerText 'Rollback: run the downloaded install.ps1 file with -Action rollback.' '66Gk67CxOiBpbnN0YWxsLnBzMSDtjIzsnbzsnYQgLUFjdGlvbiByb2xsYmFjayDsmLXshZjsnLzroZwg7Iuk7ZaJ7ZWY7Iut7Iuc7JikLg=='))
         Write-Host ('  ' + (Select-InstallerText 'Uninstall: irm https://install.ctxa.ai/uninstall.ps1 | iex (project reset is separate).' '7KCc6rGwOiBpcm0gaHR0cHM6Ly9pbnN0YWxsLmN0eGEuYWkvdW5pbnN0YWxsLnBzMSB8IGlleCAo7ZSE66Gc7KCd7Yq4IHJlc2V07J2AIOuzhOuPhCk='))
     } catch {
         if ($oldMoved -and -not (Test-Path -LiteralPath $finalPath) -and (Test-Path -LiteralPath $backupPath)) {

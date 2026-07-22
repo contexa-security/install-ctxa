@@ -9,4 +9,4 @@ if ! curl -fsSL --connect-timeout 5 --max-time 30 \
   exit 1
 fi
 
-CONTEXA_INSTALL_ACTION=uninstall sh "$installer_file"
+sh "$installer_file" uninstall

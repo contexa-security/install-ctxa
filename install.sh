@@ -23,9 +23,9 @@ msg() {
       installed) printf '%s' ' 설치와 검증을 완료했습니다: ' ;;
       primary) printf '%s' '주요 명령:' ;;
       immutable) printf '%s' '동일 버전 재설치: CONTEXA_VERSION=' ;;
-      rollback) printf '%s' '롤백: CONTEXA_INSTALL_ACTION=rollback' ;;
+      rollback) printf '%s' '롤백: install.sh rollback' ;;
       uninstall) printf '%s' '제거: curl -fsSL https://install.ctxa.ai/uninstall.sh | sh (프로젝트 reset은 별도)' ;;
-      unsupported_action) printf '%s' '지원하지 않는 CONTEXA_INSTALL_ACTION' ;;
+      unsupported_action) printf '%s' '지원하지 않는 설치 작업' ;;
     esac
   else
     case "$key" in
@@ -37,9 +37,9 @@ msg() {
       installed) printf '%s' ' installed and verified for ' ;;
       primary) printf '%s' 'Primary commands:' ;;
       immutable) printf '%s' 'Immutable reinstall: CONTEXA_VERSION=' ;;
-      rollback) printf '%s' 'Rollback: CONTEXA_INSTALL_ACTION=rollback' ;;
+      rollback) printf '%s' 'Rollback: install.sh rollback' ;;
       uninstall) printf '%s' 'Uninstall: curl -fsSL https://install.ctxa.ai/uninstall.sh | sh (project reset is separate)' ;;
-      unsupported_action) printf '%s' 'Unsupported CONTEXA_INSTALL_ACTION' ;;
+      unsupported_action) printf '%s' 'Unsupported installer action' ;;
     esac
   fi
 }
@@ -416,7 +416,7 @@ INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd -P)
 INSTALL_PATH="$INSTALL_DIR/contexa"
 BACKUP_PATH="$INSTALL_PATH.previous"
 MARKER_PATH="$INSTALL_PATH.install-transaction"
-ACTION="${CONTEXA_INSTALL_ACTION:-install}"
+ACTION="${1:-install}"
 
 recover_installer_transaction
 case "$ACTION" in

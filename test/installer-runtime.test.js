@@ -222,8 +222,12 @@ function windowsChannelInstallerEnv(base, installDir, keyXml) {
 }
 
 function runWindowsInstaller(env, timeout = 10000) {
+  const action = env.CONTEXA_INSTALL_ACTION || 'install';
+  const runtimeEnv = { ...env };
+  delete runtimeEnv.CONTEXA_INSTALL_ACTION;
   return run(powershell,
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1], env, timeout);
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1, '-Action', action],
+    runtimeEnv, timeout);
 }
 
 function runWindowsInstallerViaIex(env, timeout = 10000, catchFailure = false) {
@@ -236,7 +240,12 @@ function runWindowsInstallerViaIex(env, timeout = 10000, catchFailure = false) {
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], env, timeout);
 }
 function runPwshInstaller(env) {
-  return run(pwsh, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1], env);
+  const action = env.CONTEXA_INSTALL_ACTION || 'install';
+  const runtimeEnv = { ...env };
+  delete runtimeEnv.CONTEXA_INSTALL_ACTION;
+  return run(pwsh,
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1, '-Action', action],
+    runtimeEnv);
 }
 
 function toPosixPath(value) {
@@ -281,10 +290,19 @@ function posixInstallerEnv(base, harness, publicKeyPath, version = '') {
   };
 }
 
-function runPosixInstaller(env, installer = sh) {
+function runPosixInstaller(env, installer = sh, explicitAction = undefined) {
   const quotedPath = env.PATH.replace(/'/g, `'"'"'`);
   const scriptPath = toPosixPath(installer).replace(/'/g, `'"'"'`);
-  return run(gitSh, ['-c', `PATH='${quotedPath}'; export PATH; exec '${scriptPath}'`], env);
+  const runtimeEnv = { ...env };
+  let action = '';
+  if (explicitAction === null) {
+    // Keep a leaked legacy environment value to prove the public install entrypoint ignores it.
+  } else {
+    action = explicitAction === undefined ? (env.CONTEXA_INSTALL_ACTION || '') : explicitAction;
+    delete runtimeEnv.CONTEXA_INSTALL_ACTION;
+  }
+  const actionArgument = action ? ` '${String(action).replace(/'/g, `'"'"'`)}'` : '';
+  return run(gitSh, ['-c', `PATH='${quotedPath}'; export PATH; exec '${scriptPath}'${actionArgument}`], runtimeEnv);
 }
 
 function buildPosixCli(version, options = {}) {
@@ -402,7 +420,8 @@ test('PowerShell installer performs install, no-op, update, rollback and uninsta
   await withServer(releaseHandler(files), async (base) => {
     for (let iteration = 1; iteration <= lifecycleRepeats; iteration += 1) {
       const installDir = path.join(temp, `설치 경로 with space ${iteration}`);
-      const first = await runWindowsInstallerViaIex(windowsInstallerEnv(base, installDir, '9.9.1-test', xml));
+      const leakedActionEnv = windowsInstallerEnv(base, installDir, '9.9.1-test', xml, 'uninstall');
+      const first = await runWindowsInstallerViaIex(leakedActionEnv);
       assert.match(first.stdout, /__SHELL_ALIVE__/);
       assert.equal(first.code, 0, first.stderr || first.stdout);
       assert.match(first.stdout, /Starting Contexa CLI installation/);
@@ -990,7 +1009,11 @@ test('POSIX installer performs lifecycle and preserves the existing binary for t
   await withServer(releaseHandler(lifecycleFiles), async (base) => {
     for (let iteration = 1; iteration <= lifecycleRepeats; iteration += 1) {
       const lifecycleHarness = createPosixHarness(path.join(temp, `설치 경로 with space ${iteration}`));
-      const first = await runPosixInstaller(posixInstallerEnv(base, lifecycleHarness, publicKeyPath, currentVersion));
+      const leakedActionEnv = {
+        ...posixInstallerEnv(base, lifecycleHarness, publicKeyPath, currentVersion),
+        CONTEXA_INSTALL_ACTION: 'uninstall',
+      };
+      const first = await runPosixInstaller(leakedActionEnv, sh, null);
       assert.equal(first.code, 0, first.stderr || first.stdout);
       const installed = path.join(lifecycleHarness.installDir, 'contexa');
       assert.equal(spawnSync(gitSh, [toPosixPath(installed), '--version'], { encoding: 'utf8' }).stdout.trim(), currentVersion);
@@ -1215,18 +1238,12 @@ test('POSIX installer emits intact Korean success and error messages', { timeout
     CONTEXA_INSTALL_DIR: path.join(temp, 'bin'),
     CONTEXA_SKIP_PATH_UPDATE: '1',
   };
-  const uninstall = await run(gitSh, [scriptPath], {
-    ...baseEnv,
-    CONTEXA_INSTALL_ACTION: 'uninstall',
-  });
+  const uninstall = await run(gitSh, [scriptPath, 'uninstall'], baseEnv);
   assert.equal(uninstall.code, 0, uninstall.stderr || uninstall.stdout);
   assert.match(uninstall.stdout, /바이너리.*제거/);
   assert.equal((uninstall.stdout + uninstall.stderr).includes('\uFFFD'), false);
 
-  const invalid = await run(gitSh, [scriptPath], {
-    ...baseEnv,
-    CONTEXA_INSTALL_ACTION: 'invalid',
-  });
+  const invalid = await run(gitSh, [scriptPath, 'invalid'], baseEnv);
   assert.equal(invalid.code, 1);
   assert.match(invalid.stderr, /설치 프로그램 실패 \[INSTALLER_OPERATION_FAILED\].*오류 코드/s);
   assert.equal((invalid.stdout + invalid.stderr).includes('\uFFFD'), false);
