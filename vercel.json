@@ -1,6 +1,6 @@
 {
   "env": {
-    "CONTEXA_STABLE_INSTALLER_REF": "2f34dd5387e02bed79765a204ad0c77cb09c20bb"
+    "CONTEXA_STABLE_INSTALLER_REF": "b24932777e1be13a6a877109293e4f4fa5628c3a"
   },
   "rewrites": [
     { "source": "/(.*)", "destination": "/api" }

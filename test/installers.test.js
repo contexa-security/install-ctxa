@@ -137,7 +137,7 @@ test('public uninstall entrypoints reuse the installer without leaking control s
 
 test('Vercel routes explicit installer paths through the secured API contract', () => {
   const config = JSON.parse(read(vercelPath));
-  const stableRef = '2f34dd5387e02bed79765a204ad0c77cb09c20bb';
+  const stableRef = 'b24932777e1be13a6a877109293e4f4fa5628c3a';
   assert.equal(config.env.CONTEXA_STABLE_INSTALLER_REF, stableRef);
   assert.equal(config.redirects, undefined,
     'direct redirects bypass the API response security headers');
@@ -198,10 +198,10 @@ test('api prioritizes explicit paths and exposes immutable version URLs', () => 
 
   const originalStableRef = process.env.CONTEXA_STABLE_INSTALLER_REF;
   try {
-    process.env.CONTEXA_STABLE_INSTALLER_REF = '2f34dd5387e02bed79765a204ad0c77cb09c20bb';
+    process.env.CONTEXA_STABLE_INSTALLER_REF = 'b24932777e1be13a6a877109293e4f4fa5628c3a';
     const stable = invoke('/', 'WindowsPowerShell/5.1');
     assert.equal(stable.statusCode, 302);
-    assert.equal(stable.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/2f34dd5387e02bed79765a204ad0c77cb09c20bb/install.ps1');
+    assert.equal(stable.headers.location, 'https://raw.githubusercontent.com/contexa-security/install-ctxa/b24932777e1be13a6a877109293e4f4fa5628c3a/install.ps1');
     assert.equal(stable.headers['content-type'], 'text/plain; charset=utf-8');
     assert.equal(stable.headers['cache-control'], 'no-store');
     assert.equal(stable.headers['x-content-type-options'], 'nosniff');
