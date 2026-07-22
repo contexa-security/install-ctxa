@@ -148,6 +148,12 @@ jobs:
             > "$fixture/build.gradle"
           printf "%s\n" "rootProject.name = 'installer-smoke'" > "$fixture/settings.gradle"
           printf '%s\n' 'server:' '  port: 9080' > "$fixture/src/main/resources/application.yml"
+          printf '%s\n' \
+            'package example;' \
+            'import org.springframework.boot.autoconfigure.SpringBootApplication;' \
+            '@SpringBootApplication' \
+            'public class InstallerSmokeApplication {}' \
+            > "$fixture/src/main/java/example/InstallerSmokeApplication.java"
           "$CONTEXA_INSTALL_DIR/contexa" init --yes --dir "$fixture"
           "$CONTEXA_INSTALL_DIR/contexa" reset --yes --dir "$fixture"
           test ! -f "$fixture/contexa/manifest.json"
@@ -193,6 +199,12 @@ jobs:
           ) -join "`n") + "`n", $utf8)
           [IO.File]::WriteAllText((Join-Path $fixture 'settings.gradle'), "rootProject.name = 'installer-smoke'`n", $utf8)
           [IO.File]::WriteAllText((Join-Path $fixture 'src\main\resources\application.yml'), "server:`n  port: 9080`n", $utf8)
+          [IO.File]::WriteAllText((Join-Path $fixture 'src\main\java\example\InstallerSmokeApplication.java'), (@(
+            'package example;',
+            'import org.springframework.boot.autoconfigure.SpringBootApplication;',
+            '@SpringBootApplication',
+            'public class InstallerSmokeApplication {}'
+          ) -join "`n") + "`n", $utf8)
           & $binary init --yes --dir $fixture
           & $binary reset --yes --dir $fixture
           if (Test-Path -LiteralPath (Join-Path $fixture 'contexa\manifest.json')) { throw 'reset left manifest behind' }
