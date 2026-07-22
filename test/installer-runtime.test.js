@@ -226,6 +226,15 @@ function runWindowsInstaller(env, timeout = 10000) {
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1], env, timeout);
 }
 
+function runWindowsInstallerViaIex(env, timeout = 10000, catchFailure = false) {
+  const sourcePath = ps1.replace(/'/g, "''");
+  const invocation = `Invoke-Expression ([IO.File]::ReadAllText('${sourcePath}'))`;
+  const command = catchFailure
+    ? `try { ${invocation} } catch { Write-Output ('__INSTALL_ERROR_CAUGHT__:' + $_.Exception.Message) }; Write-Output '__SHELL_ALIVE__'`
+    : `${invocation}; Write-Output '__SHELL_ALIVE__'`;
+  return run(powershell,
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], env, timeout);
+}
 function runPwshInstaller(env) {
   return run(pwsh, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1], env);
 }
@@ -393,7 +402,8 @@ test('PowerShell installer performs install, no-op, update, rollback and uninsta
   await withServer(releaseHandler(files), async (base) => {
     for (let iteration = 1; iteration <= lifecycleRepeats; iteration += 1) {
       const installDir = path.join(temp, `설치 경로 with space ${iteration}`);
-      const first = await runWindowsInstaller(windowsInstallerEnv(base, installDir, '9.9.1-test', xml));
+      const first = await runWindowsInstallerViaIex(windowsInstallerEnv(base, installDir, '9.9.1-test', xml));
+      assert.match(first.stdout, /__SHELL_ALIVE__/);
       assert.equal(first.code, 0, first.stderr || first.stdout);
       assert.match(first.stdout, /Starting Contexa CLI installation/);
       assert.match(first.stdout, /Release v9\.9\.1-test found\. Checking authenticity/);
@@ -403,7 +413,8 @@ test('PowerShell installer performs install, no-op, update, rollback and uninsta
       const originalTime = fs.statSync(installed).mtimeMs;
       const originalDigest = sha256(fs.readFileSync(installed));
 
-      const same = await runWindowsInstaller(windowsInstallerEnv(base, installDir, '9.9.1-test', xml));
+      const same = await runWindowsInstallerViaIex(windowsInstallerEnv(base, installDir, '9.9.1-test', xml));
+      assert.match(same.stdout, /__SHELL_ALIVE__/);
       assert.equal(same.code, 0, same.stderr || same.stdout);
       assert.equal(fs.statSync(installed).mtimeMs, originalTime, 'same-version install must not replace the binary');
       assert.equal(sha256(fs.readFileSync(installed)), originalDigest);
@@ -425,6 +436,21 @@ test('PowerShell installer performs install, no-op, update, rollback and uninsta
       assert.deepEqual(fs.readdirSync(installDir), [], `iteration ${iteration} left installer residue`);
     }
   });
+});
+test('PowerShell IEX failure preserves the caller session',
+  { skip: process.platform !== 'win32', timeout: 10000 }, async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'contexa-installer-iex-failure-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const result = await runWindowsInstallerViaIex({
+    ...process.env,
+    CONTEXA_LANG: 'en',
+    CONTEXA_INSTALL_DIR: path.join(temp, 'bin'),
+    CONTEXA_SKIP_PATH_UPDATE: '1',
+    CONTEXA_HTTP_CONNECT_TIMEOUT_SEC: 'invalid',
+  }, 10000, true);
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /__INSTALL_ERROR_CAUGHT__:.*INSTALLER_OPERATION_FAILED/s);
+  assert.match(result.stdout, /__SHELL_ALIVE__/);
 });
 test('PowerShell installer bounds HTTP retries and preserves the existing binary for the full fault matrix',
   { skip: process.platform !== 'win32', timeout: 600000 }, async (t) => {

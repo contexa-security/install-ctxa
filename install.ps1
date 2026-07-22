@@ -1,36 +1,40 @@
 #Requires -Version 5.1
 
+& {
+$DirectFileInvocation = -not [string]::IsNullOrWhiteSpace($PSCommandPath)
+$InstallerFailed = $false
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 
 # PowerShell 5.1 otherwise uses a legacy code page when stdout/stderr is
 # redirected, corrupting Korean output consumed by CI and automation.
-$script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[Console]::OutputEncoding = $script:Utf8NoBom
-$OutputEncoding = $script:Utf8NoBom
+$OriginalConsoleOutputEncoding = [Console]::OutputEncoding
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
 
-$script:OriginalProgressPreference = $ProgressPreference
+$OriginalProgressPreference = $ProgressPreference
 $ProgressPreference = 'SilentlyContinue'
 
 $requestedLanguage = [Environment]::GetEnvironmentVariable('CONTEXA_LANG')
 if ([string]::IsNullOrWhiteSpace($requestedLanguage)) {
     $requestedLanguage = [System.Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName
 }
-$script:InstallerLanguage = if ($requestedLanguage -match '^(?i:ko)(?:[-_].*)?$') { 'ko' } else { 'en' }
+$InstallerLanguage = if ($requestedLanguage -match '^(?i:ko)(?:[-_].*)?$') { 'ko' } else { 'en' }
 
 function Select-InstallerText {
     param([string]$English, [string]$KoreanUtf8Base64)
-    if ($script:InstallerLanguage -eq 'ko') {
+    if ($InstallerLanguage -eq 'ko') {
         return [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($KoreanUtf8Base64))
     }
     return $English
 }
 
-$script:Repository = 'contexa-security/contexa-cli'
-$script:DefaultChannelManifestUrl = 'https://raw.githubusercontent.com/contexa-security/contexa-cli/snapshot-channel/channel-manifest.json'
-$script:DefaultChannelSignatureUrl = 'https://raw.githubusercontent.com/contexa-security/contexa-cli/snapshot-channel/channel-manifest.json.sig'
-$script:DefaultDownloadBase = 'https://github.com/contexa-security/contexa-cli/releases/download'
-$script:PublicKeyXml = '<RSAKeyValue><Modulus>osHQvVy9S+AGAvskLk13njD9SoRHMURAbU2RQWZgQt2t0vN3Ib7aVMIwStGdJhaDIuPHTg0WrwM6ogPDDqfFmHHm8XkviBHnkgFQWvovLHtRudSgU6g+5ReaT0G0HsWFC3aGVJhOEwo5EqJJxZgjIc533CJTyn6ZbV8C0PGPP3kZQb1C/zPCaVtQg02v3Vm1C+sivBfCFRRJlcXhfc5hvbtB40DcRFkJfkBbdHBwdAnRfuH8OnIeL9dWEFyNgR7ZIREnjqNahtZbUM9gBS1p1Zw3ffTls2QSyMvQobqwNOdfP2/LN0K8uiJJ8K7nh524wGANdTlmKY2cAAkUbZsO2FK7sLCcVDXShQptXFj31DEzdQCb9hAnarXK5C6qBFxloDGzV8b+xlALFQBIO8xwXlxR8jZq+CiVJmWHUr78A0fubstaBUSgpU1ZzdUl0plI6MczU/udM7miH/O1ih7t0ox745ahU/7eXEYOLNRAJs2gidol7m+apyY/qV7DIMhz</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
+$Repository = 'contexa-security/contexa-cli'
+$DefaultChannelManifestUrl = 'https://raw.githubusercontent.com/contexa-security/contexa-cli/snapshot-channel/channel-manifest.json'
+$DefaultChannelSignatureUrl = 'https://raw.githubusercontent.com/contexa-security/contexa-cli/snapshot-channel/channel-manifest.json.sig'
+$DefaultDownloadBase = 'https://github.com/contexa-security/contexa-cli/releases/download'
+$PublicKeyXml = '<RSAKeyValue><Modulus>osHQvVy9S+AGAvskLk13njD9SoRHMURAbU2RQWZgQt2t0vN3Ib7aVMIwStGdJhaDIuPHTg0WrwM6ogPDDqfFmHHm8XkviBHnkgFQWvovLHtRudSgU6g+5ReaT0G0HsWFC3aGVJhOEwo5EqJJxZgjIc533CJTyn6ZbV8C0PGPP3kZQb1C/zPCaVtQg02v3Vm1C+sivBfCFRRJlcXhfc5hvbtB40DcRFkJfkBbdHBwdAnRfuH8OnIeL9dWEFyNgR7ZIREnjqNahtZbUM9gBS1p1Zw3ffTls2QSyMvQobqwNOdfP2/LN0K8uiJJ8K7nh524wGANdTlmKY2cAAkUbZsO2FK7sLCcVDXShQptXFj31DEzdQCb9hAnarXK5C6qBFxloDGzV8b+xlALFQBIO8xwXlxR8jZq+CiVJmWHUr78A0fubstaBUSgpU1ZzdUl0plI6MczU/udM7miH/O1ih7t0ox745ahU/7eXEYOLNRAJs2gidol7m+apyY/qV7DIMhz</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 
 function Get-PositiveIntEnvironment {
     param([string]$Name, [int]$DefaultValue, [int]$Maximum)
@@ -184,7 +188,7 @@ function Convert-BytesToText {
 function Get-TrustedPublicKeyXml {
     param([string]$DownloadBase)
     if ([string]::IsNullOrWhiteSpace($env:CONTEXA_TRUSTED_PUBLIC_KEY_XML)) {
-        return $script:PublicKeyXml
+        return $PublicKeyXml
     }
     $uri = [Uri]$DownloadBase
     if (-not $uri.IsLoopback) {
@@ -226,10 +230,10 @@ function Get-TargetRelease {
     }
 
     $manifestUrl = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_CHANNEL_MANIFEST_URL)) {
-        $script:DefaultChannelManifestUrl
+        $DefaultChannelManifestUrl
     } else { $env:CONTEXA_CHANNEL_MANIFEST_URL.Trim() }
     $signatureUrl = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_CHANNEL_SIGNATURE_URL)) {
-        $script:DefaultChannelSignatureUrl
+        $DefaultChannelSignatureUrl
     } else { $env:CONTEXA_CHANNEL_SIGNATURE_URL.Trim() }
     $manifestBytes = Invoke-BoundedDownload $manifestUrl
     $signatureBytes = Invoke-BoundedDownload $signatureUrl
@@ -526,7 +530,7 @@ function Invoke-ContexaInstaller {
     }
 
     Write-Host ('  ' + (Select-InstallerText 'Starting Contexa CLI installation.' 'Q29udGV4YSBDTEkg7ISk7LmY66W8IOyLnOyeke2VqeuLiOuLpC4='))
-    $downloadBase = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_RELEASE_DOWNLOAD_BASE)) { $script:DefaultDownloadBase } else { $env:CONTEXA_RELEASE_DOWNLOAD_BASE.TrimEnd('/') }
+    $downloadBase = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_RELEASE_DOWNLOAD_BASE)) { $DefaultDownloadBase } else { $env:CONTEXA_RELEASE_DOWNLOAD_BASE.TrimEnd('/') }
     $targetRelease = Get-TargetRelease $downloadBase
     $version = $targetRelease.ReleaseTag
     $expectedCliVersion = $targetRelease.CliVersion
@@ -656,24 +660,32 @@ function Invoke-ContexaInstaller {
 
 try {
     Invoke-ContexaInstaller
-    exit 0
 } catch {
+    $InstallerFailed = $true
     $failureCode = 'INSTALLER_OPERATION_FAILED'
     if ($_.Exception.Message -match '\[([A-Z][A-Z0-9_]+)\]') {
         $failureCode = $Matches[1]
     }
-    if ($script:InstallerLanguage -eq 'ko') {
-        [Console]::Error.WriteLine(
+    if ($InstallerLanguage -eq 'ko') {
+        $failureSummary =
             'Contexa ' +
             (Select-InstallerText 'installer failed [' '7ISk7LmYIO2UhOuhnOq3uOueqCDsi6TtjKggWw==') +
             $failureCode +
             (Select-InstallerText ']: Check the error code, fix the cause, and run the same command again.' 'XTog7Jik66WYIOy9lOuTnOulvCDtmZXsnbjtlZjqs6Ag7JuQ7J247J2EIOyImOygle2VnCDrkqQg6rCZ7J2AIOuqheugueydhCDri6Tsi5wg7Iuk7ZaJ7ZWY7IS47JqULg==')
-        )
     } else {
-        [Console]::Error.WriteLine('Contexa installer failed [' + $failureCode + ']: ' + $_.Exception.Message)
+        $failureSummary = 'Contexa installer failed [' + $failureCode + ']: ' + $_.Exception.Message
     }
-    [Console]::Error.WriteLine((Select-InstallerText 'The existing CLI was preserved when possible. Fix the reported cause and run the same command again.' '6rCA64ql7ZWcIOqyveyasCDquLDsobQgQ0xJ66W8IOuztOyhtO2WiOyKteuLiOuLpC4g67O06rOg65CcIOybkOyduOydhCDtlbTqsrDtlZwg65KkIOqwmeydgCDrqoXroLnsnYQg64uk7IucIOyLpO2Wie2VmOyEuOyalC4='))
-    exit 1
+    $preservationMessage = Select-InstallerText 'The existing CLI was preserved when possible. Fix the reported cause and run the same command again.' '6rCA64ql7ZWcIOqyveyasCDquLDsobQgQ0xJ66W8IOuztOyhtO2WiOyKteuLiOuLpC4g67O06rOg65CcIOybkOyduOydhCDtlbTqsrDtlZwg65KkIOqwmeydgCDrqoXroLnsnYQg64uk7IucIOyLpO2Wie2VmOyEuOyalC4='
+    [Console]::Error.WriteLine($failureSummary)
+    [Console]::Error.WriteLine($preservationMessage)
+    throw [System.InvalidOperationException]::new(
+        ('Contexa installer failed [' + $failureCode + '].'),
+        $_.Exception
+    )
 } finally {
-    $ProgressPreference = $script:OriginalProgressPreference
+    $ProgressPreference = $OriginalProgressPreference
+    if (-not $InstallerFailed -or -not $DirectFileInvocation) {
+        [Console]::OutputEncoding = $OriginalConsoleOutputEncoding
+    }
+}
 }
