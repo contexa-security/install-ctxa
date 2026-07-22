@@ -28,6 +28,10 @@ function assertNoReplacementOrBoxDrawing(src) {
 test('install.ps1 enforces the signed, bounded and atomic installation contract', () => {
   const src = read(ps1Path);
   assert.ok(src.startsWith('#Requires -Version 5.1'));
+  assert.match(src, /^& \{$/m, 'installer must isolate its preferences and functions from the IEX caller');
+  assert.equal(/^\s*exit\s+[01]\s*$/m.test(src), false,
+    'installer invoked through IEX must never terminate the caller PowerShell session');
+  assert.match(src, /\[Console\]::OutputEncoding = \$OriginalConsoleOutputEncoding/);
   assert.equal(src.includes('E:\\projects'), false);
   assert.equal(src.includes('localBuildPath'), false);
   assert.equal(src.includes('docker'), false, 'installer must not block on Docker');
