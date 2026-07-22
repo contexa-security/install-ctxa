@@ -53,6 +53,12 @@ test('install.ps1 enforces the signed, bounded and atomic installation contract'
   assert.match(src, /Test-BinarySmoke \$temporaryPath/);
   assert.match(src, /Ensure-CommandPath/);
   assert.match(src, /was not deleted/);
+  const startProgress = src.indexOf('Starting Contexa CLI installation.');
+  const releaseLookup = src.indexOf('$targetRelease = Get-TargetRelease');
+  assert.ok(startProgress >= 0 && startProgress < releaseLookup,
+    'installer must report progress before the first release lookup');
+  assert.match(src, /Release \{0\} found\. Checking authenticity/);
+  assert.match(src, /Downloading Contexa CLI and verifying the file/);
   for (const command of ['contexa init', 'contexa reset', 'contexa init --simulate', 'contexa reset --simulate']) {
     assert.ok(src.includes(command), `missing primary command: ${command}`);
   }

@@ -525,11 +525,13 @@ function Invoke-ContexaInstaller {
         throw ((Select-InstallerText 'Unsupported CONTEXA_INSTALL_ACTION' '7KeA7JuQ7ZWY7KeAIOyViuuKlCBDT05URVhBX0lOU1RBTExfQUNUSU9O') + ': ' + $action)
     }
 
+    Write-Host ('  ' + (Select-InstallerText 'Starting Contexa CLI installation.' 'Q29udGV4YSBDTEkg7ISk7LmY66W8IOyLnOyeke2VqeuLiOuLpC4='))
     $downloadBase = if ([string]::IsNullOrWhiteSpace($env:CONTEXA_RELEASE_DOWNLOAD_BASE)) { $script:DefaultDownloadBase } else { $env:CONTEXA_RELEASE_DOWNLOAD_BASE.TrimEnd('/') }
     $targetRelease = Get-TargetRelease $downloadBase
     $version = $targetRelease.ReleaseTag
     $expectedCliVersion = $targetRelease.CliVersion
     $releaseBase = $downloadBase + '/' + $version
+    Write-Host ('  ' + ((Select-InstallerText 'Release {0} found. Checking authenticity...' '66a066as7IqkIHswfeydhCDtmZXsnbjtlojsirXri4jri6QuIOyLoOuisOyEseydhCDqsoDspp3tlZjripQg7KSR7J6F64uI64ukLi4u') -f $version))
 
     $manifestBytes = Invoke-BoundedDownload ($releaseBase + '/release-manifest.json')
     $signatureBytes = Invoke-BoundedDownload ($releaseBase + '/release-manifest.json.sig')
@@ -591,6 +593,7 @@ function Invoke-ContexaInstaller {
     $hadOriginal = Test-Path -LiteralPath $finalPath -PathType Leaf
     $replacementStarted = $false
     try {
+        Write-Host ('  ' + (Select-InstallerText 'Downloading Contexa CLI and verifying the file...' 'Q29udGV4YSBDTEnrpbwg64uk7Jq066Gc65Oc7ZWY6rOgIO2MjOydvCDrrLTqsrDshLHsnYQg6rKA7Kad7ZWY64qUIOykkeyeheuLiOuLpC4uLg=='))
         $binaryBytes = Invoke-BoundedDownload ($releaseBase + '/' + $asset.file)
         [System.IO.File]::WriteAllBytes($temporaryPath, $binaryBytes)
         Write-InstallerTransaction $markerPath 'DOWNLOADED' $finalPath $backupPath $temporaryPath $expectedCliVersion $hadOriginal

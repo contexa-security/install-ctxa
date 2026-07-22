@@ -205,6 +205,7 @@ function windowsInstallerEnv(base, installDir, version, keyXml, action = 'instal
     CONTEXA_INSTALL_DIR: installDir,
     CONTEXA_INSTALL_ACTION: action,
     CONTEXA_SKIP_PATH_UPDATE: '1',
+    CONTEXA_LANG: 'en',
     CONTEXA_HTTP_CONNECT_TIMEOUT_SEC: '1',
     CONTEXA_HTTP_TOTAL_TIMEOUT_SEC: '2',
     CONTEXA_HTTP_RETRIES: '1',
@@ -394,6 +395,9 @@ test('PowerShell installer performs install, no-op, update, rollback and uninsta
       const installDir = path.join(temp, `설치 경로 with space ${iteration}`);
       const first = await runWindowsInstaller(windowsInstallerEnv(base, installDir, '9.9.1-test', xml));
       assert.equal(first.code, 0, first.stderr || first.stdout);
+      assert.match(first.stdout, /Starting Contexa CLI installation/);
+      assert.match(first.stdout, /Release v9\.9\.1-test found\. Checking authenticity/);
+      assert.match(first.stdout, /Downloading Contexa CLI and verifying the file/);
       const installed = path.join(installDir, 'contexa.exe');
       assert.equal(spawnSync(installed, ['--version'], { encoding: 'utf8' }).stdout.trim(), '9.9.1-test');
       const originalTime = fs.statSync(installed).mtimeMs;
