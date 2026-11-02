@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+ORIGINAL_PATH=${PATH:-}
 
 REPO="contexa-security/contexa-cli"
 DEFAULT_CHANNEL_MANIFEST_URL="https://raw.githubusercontent.com/$REPO/snapshot-channel/channel-manifest.json"
@@ -21,9 +22,9 @@ msg() {
       uninstalled) printf '%s' 'Contexa CLI 바이너리와 설치 프로그램 소유 PATH 항목을 제거했습니다. 프로젝트 파일은 변경하지 않았습니다.' ;;
       already_installed) printf '%s' ' 버전이 이미 설치되어 있어 파일을 교체하지 않았습니다.' ;;
       installed) printf '%s' ' 설치와 검증을 완료했습니다: ' ;;
-      primary) printf '%s' '주요 명령:' ;;
-      immutable) printf '%s' '동일 버전 재설치: CONTEXA_VERSION=' ;;
-      rollback) printf '%s' '롤백: install.sh rollback' ;;
+      next) printf '%s' '다음 단계 - Spring Boot 프로젝트 폴더에서 실행하세요:' ;;
+      no_project) printf '%s' '(프로젝트가 아직 없으면 빈 폴더에서 contexa init을 실행하면 예제 앱을 만들어 줍니다.)' ;;
+      path_now) printf '%s' '이 터미널은 아직 새 명령을 모릅니다. 아래 한 줄을 실행하거나 새 터미널을 여세요:' ;;
       uninstall) printf '%s' '제거: curl -fsSL https://install.ctxa.ai/uninstall.sh | sh (프로젝트 reset은 별도)' ;;
       unsupported_action) printf '%s' '지원하지 않는 설치 작업' ;;
     esac
@@ -35,9 +36,9 @@ msg() {
       uninstalled) printf '%s' 'Contexa CLI binary and installer-owned PATH entry were removed. Project files were not changed.' ;;
       already_installed) printf '%s' ' is already installed; no file was replaced.' ;;
       installed) printf '%s' ' installed and verified for ' ;;
-      primary) printf '%s' 'Primary commands:' ;;
-      immutable) printf '%s' 'Immutable reinstall: CONTEXA_VERSION=' ;;
-      rollback) printf '%s' 'Rollback: install.sh rollback' ;;
+      next) printf '%s' 'Next - run this in your Spring Boot project folder:' ;;
+      no_project) printf '%s' '(No project yet? Run contexa init in an empty folder and it creates a sample application.)' ;;
+      path_now) printf '%s' 'This terminal does not know the new command yet. Run this line, or open a new terminal:' ;;
       uninstall) printf '%s' 'Uninstall: curl -fsSL https://install.ctxa.ai/uninstall.sh | sh (project reset is separate)' ;;
       unsupported_action) printf '%s' 'Unsupported installer action' ;;
     esac
@@ -45,11 +46,7 @@ msg() {
 }
 
 fail() {
-  if [ "$INSTALL_LANG" = ko ]; then
-    printf '%s\n' "$(msg fail_prefix) [INSTALLER_OPERATION_FAILED]: 오류 코드를 확인하고 원인을 수정한 뒤 같은 명령을 다시 실행하세요." >&2
-  else
-    printf '%s\n' "$(msg fail_prefix) [INSTALLER_OPERATION_FAILED]: $1" >&2
-  fi
+  printf '%s\n' "$(msg fail_prefix) [INSTALLER_OPERATION_FAILED]: $1" >&2
   printf '%s\n' "$(msg preserved)" >&2
   exit 1
 }
@@ -373,8 +370,21 @@ recover_installer_transaction() {
   fail "Installer recovery found no verified healthy old or new binary. The marker and files were retained: $MARKER_PATH"
 }
 
-profile_path() {
-  if [ -n "${CONTEXA_SHELL_PROFILE:-}" ]; then printf '%s' "$CONTEXA_SHELL_PROFILE"; else printf '%s' "$HOME/.profile"; fi
+# Shell start-up files that get the PATH line. ~/.profile alone is not enough: terminal tabs
+# start non-login bash shells (~/.bashrc) and macOS uses zsh (~/.zshrc), which never read it.
+profile_paths() {
+  if [ -n "${CONTEXA_SHELL_PROFILE:-}" ]; then printf '%s\n' "$CONTEXA_SHELL_PROFILE"; return 0; fi
+  printf '%s\n' "$HOME/.profile"
+  case "${SHELL:-}" in */bash) printf '%s\n' "$HOME/.bashrc" ;; *) [ -f "$HOME/.bashrc" ] && printf '%s\n' "$HOME/.bashrc" ;; esac
+  case "${SHELL:-}" in
+    */zsh) printf '%s\n' "$HOME/.zshrc" ;;
+    *) if [ -f "$HOME/.zshrc" ] || [ "$(uname -s 2>/dev/null)" = Darwin ]; then printf '%s\n' "$HOME/.zshrc"; fi ;;
+  esac
+  return 0
+}
+
+fish_path_file() {
+  printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/contexa.fish"
 }
 
 ensure_path() {
@@ -383,13 +393,18 @@ ensure_path() {
   resolved=$(command -v contexa 2>/dev/null || true)
   [ "$resolved" = "$INSTALL_PATH" ] || fail "PATH conflict: first contexa command is ${resolved:-missing}, expected $INSTALL_PATH."
   if [ "${CONTEXA_SKIP_PATH_UPDATE:-0}" != 1 ]; then
-    PROFILE=$(profile_path)
-    if ! grep -Fq '# >>> contexa-cli installer >>>' "$PROFILE" 2>/dev/null; then
-      {
-        printf '\n%s\n' '# >>> contexa-cli installer >>>'
-        printf 'export PATH="%s:$PATH"\n' "$INSTALL_DIR"
-        printf '%s\n' '# <<< contexa-cli installer <<<'
-      } >>"$PROFILE"
+    profile_paths | while IFS= read -r PROFILE; do
+      if ! grep -Fq '# >>> contexa-cli installer >>>' "$PROFILE" 2>/dev/null; then
+        {
+          printf '\n%s\n' '# >>> contexa-cli installer >>>'
+          printf 'export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+          printf '%s\n' '# <<< contexa-cli installer <<<'
+        } >>"$PROFILE"
+      fi
+    done
+    if [ -z "${CONTEXA_SHELL_PROFILE:-}" ] && { command -v fish >/dev/null 2>&1 || [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/fish" ]; }; then
+      FISH_FILE=$(fish_path_file)
+      mkdir -p "$(dirname "$FISH_FILE")" && printf 'fish_add_path -g "%s"\n' "$INSTALL_DIR" >"$FISH_FILE"
     fi
   fi
   if command -v which >/dev/null 2>&1; then
@@ -399,15 +414,33 @@ ensure_path() {
 
 remove_profile_block() {
   [ "${CONTEXA_SKIP_PATH_UPDATE:-0}" = 1 ] && return 0
-  PROFILE=$(profile_path)
-  [ -f "$PROFILE" ] || return 0
-  temporary="$PROFILE.contexa-remove.$$"
-  awk '
-    $0 == "# >>> contexa-cli installer >>>" { skip = 1; next }
-    $0 == "# <<< contexa-cli installer <<<" { skip = 0; next }
-    !skip { print }
-  ' "$PROFILE" >"$temporary"
-  mv "$temporary" "$PROFILE"
+  profile_paths | while IFS= read -r PROFILE; do
+    [ -f "$PROFILE" ] || continue
+    grep -Fq '# >>> contexa-cli installer >>>' "$PROFILE" || continue
+    temporary="$PROFILE.contexa-remove.$$"
+    awk '
+      $0 == "# >>> contexa-cli installer >>>" { skip = 1; next }
+      $0 == "# <<< contexa-cli installer <<<" { skip = 0; next }
+      !skip { print }
+    ' "$PROFILE" >"$temporary"
+    mv "$temporary" "$PROFILE"
+  done
+  [ -n "${CONTEXA_SHELL_PROFILE:-}" ] || rm -f "$(fish_path_file)"
+}
+
+# What to do next, and how to use the command in this very terminal when the installer had to
+# add its folder to PATH (a piped `curl | sh` cannot change the calling shell).
+print_next_steps() {
+  printf '\n%s\n' "$(msg next)"
+  printf '%s\n' "  contexa init"
+  printf '%s\n' "$(msg no_project)"
+  case ":$ORIGINAL_PATH:" in
+    *":$INSTALL_DIR:"*) ;;
+    *)
+      printf '\n%s\n' "$(msg path_now)"
+      printf '  export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+      ;;
+  esac
 }
 
 INSTALL_DIR=$(resolve_install_dir)
@@ -543,6 +576,7 @@ if [ -f "$INSTALL_PATH" ] && [ "$(reported_version "$INSTALL_PATH")" = "$EXPECTE
   smoke_binary "$INSTALL_PATH" "$EXPECTED_VERSION" || fail "The installed same-version binary failed smoke verification."
   ensure_path
   printf '%s\n' "Contexa $VERSION$(msg already_installed)"
+  print_next_steps
   exit 0
 fi
 
@@ -585,7 +619,5 @@ write_installer_transaction SMOKE_PASSED
 ensure_path
 clear_installer_transaction
 printf '%s\n' "Contexa $VERSION$(msg installed)$PLATFORM."
-printf '%s\n' "$(msg primary)" "  contexa init" "  contexa reset" "  contexa init --simulate" "  contexa reset --simulate"
-printf '%s\n' "$(msg immutable)$VERSION"
-printf '%s\n' "$(msg rollback)"
-printf '%s\n' "$(msg uninstall)"
+print_next_steps
+printf '\n%s\n' "$(msg uninstall)"

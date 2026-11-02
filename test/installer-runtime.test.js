@@ -1245,6 +1245,6 @@ test('POSIX installer emits intact Korean success and error messages', { timeout
 
   const invalid = await run(gitSh, [scriptPath, 'invalid'], baseEnv);
   assert.equal(invalid.code, 1);
-  assert.match(invalid.stderr, /설치 프로그램 실패 \[INSTALLER_OPERATION_FAILED\].*오류 코드/s);
+  assert.match(invalid.stderr, /설치 프로그램 실패 \[INSTALLER_OPERATION_FAILED\]: 지원하지 않는 설치 작업: invalid/s);
   assert.equal((invalid.stdout + invalid.stderr).includes('\uFFFD'), false);
 });

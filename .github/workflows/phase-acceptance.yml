@@ -137,7 +137,7 @@ jobs:
           test "$("$CONTEXA_INSTALL_DIR/contexa" --version)" = "$expected_current"
           test "$("$CONTEXA_INSTALL_DIR/contexa.previous" --version)" = "$expected_previous"
           CONTEXA_VERSION="$CONTEXA_PHASE_TAG" sh ./install.sh
-          CONTEXA_INSTALL_ACTION=rollback sh ./install.sh
+          sh ./install.sh rollback
           test "$("$CONTEXA_INSTALL_DIR/contexa" --version)" = "$expected_previous"
           CONTEXA_VERSION="$CONTEXA_PHASE_TAG" sh ./install.sh
           fixture="$RUNNER_TEMP/contexa-installer-smoke"
@@ -154,10 +154,15 @@ jobs:
             '@SpringBootApplication' \
             'public class InstallerSmokeApplication {}' \
             > "$fixture/src/main/java/example/InstallerSmokeApplication.java"
+          # The CLI side of init/reset; local services, Java and the dependency download are
+          # replaced by the CLI test hooks so this step only depends on the installed binary.
+          export CONTEXA_TEST_LOCAL_SERVICES=fake CONTEXA_TEST_DEPENDENCY_CHECK=pass CONTEXA_TEST_JAVA_VERSION=17
           "$CONTEXA_INSTALL_DIR/contexa" init --yes --dir "$fixture"
+          test -f "$fixture/src/main/resources/config/application.yml"
           "$CONTEXA_INSTALL_DIR/contexa" reset --yes --dir "$fixture"
+          test ! -e "$fixture/src/main/resources/config/application.yml"
           test ! -f "$fixture/contexa/manifest.json"
-          CONTEXA_INSTALL_ACTION=uninstall sh ./install.sh
+          sh ./install.sh uninstall
           test ! -e "$CONTEXA_INSTALL_DIR/contexa"
           test ! -e "$CONTEXA_INSTALL_DIR/contexa.previous"
 
@@ -182,9 +187,7 @@ jobs:
           & .\install.ps1
           if ((& $binary --version).Trim() -ne $env:CONTEXA_PHASE_TAG.TrimStart('v')) { throw 'current update mismatch' }
           & .\install.ps1
-          $env:CONTEXA_INSTALL_ACTION = 'rollback'
-          & .\install.ps1
-          Remove-Item Env:CONTEXA_INSTALL_ACTION
+          & .\install.ps1 -Action rollback
           if ((& $binary --version).Trim() -ne $env:CONTEXA_PREVIOUS_TAG.TrimStart('v')) { throw 'rollback mismatch' }
           $env:CONTEXA_VERSION = $env:CONTEXA_PHASE_TAG
           & .\install.ps1
@@ -205,10 +208,13 @@ jobs:
             '@SpringBootApplication',
             'public class InstallerSmokeApplication {}'
           ) -join "`n") + "`n", $utf8)
-          & $binary init --yes --no-docker --dir $fixture
+          $env:CONTEXA_TEST_LOCAL_SERVICES = 'fake'
+          $env:CONTEXA_TEST_DEPENDENCY_CHECK = 'pass'
+          $env:CONTEXA_TEST_JAVA_VERSION = '17'
+          & $binary init --yes --dir $fixture
+          if (-not (Test-Path -LiteralPath (Join-Path $fixture 'src\main\resources\config\application.yml'))) { throw 'init did not write the Contexa settings' }
           & $binary reset --yes --dir $fixture
           if (Test-Path -LiteralPath (Join-Path $fixture 'contexa\manifest.json')) { throw 'reset left manifest behind' }
-          $env:CONTEXA_INSTALL_ACTION = 'uninstall'
-          & .\install.ps1
+          & .\install.ps1 -Action uninstall
           if (Test-Path -LiteralPath $binary) { throw 'uninstall left the final binary behind' }
           if (Test-Path -LiteralPath ($binary + '.previous')) { throw 'uninstall left the previous binary behind' }

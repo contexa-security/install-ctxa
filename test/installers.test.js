@@ -65,9 +65,9 @@ test('install.ps1 enforces the signed, bounded and atomic installation contract'
     'installer must report progress before the first release lookup');
   assert.match(src, /Release \{0\} found\. Checking authenticity/);
   assert.match(src, /Downloading Contexa CLI and verifying the file/);
-  for (const command of ['contexa init', 'contexa reset', 'contexa init --simulate', 'contexa reset --simulate']) {
-    assert.ok(src.includes(command), `missing primary command: ${command}`);
-  }
+  assert.match(src, /Write-NextSteps/);
+  assert.ok(src.includes('contexa init'), 'missing the next step command');
+  assert.equal(src.includes('--simulate'), false, 'removed commands must not be advertised');
 });
 
 test('install.sh enforces supported platforms, bounded download and atomic replacement', () => {
@@ -99,9 +99,11 @@ test('install.sh enforces supported platforms, bounded download and atomic repla
   assert.match(src, /smoke_binary "\$NEW_BINARY"/);
   assert.match(src, /MANIFEST_CODE_SIGNATURE/);
   assert.match(src, /was not deleted/);
-  for (const command of ['contexa init', 'contexa reset', 'contexa init --simulate', 'contexa reset --simulate']) {
-    assert.ok(src.includes(command), `missing primary command: ${command}`);
-  }
+  assert.match(src, /print_next_steps/);
+  assert.ok(src.includes('contexa init'), 'missing the next step command');
+  assert.equal(src.includes('--simulate'), false, 'removed commands must not be advertised');
+  assert.match(src, /\.bashrc/);
+  assert.match(src, /\.zshrc/);
 });
 
 test('installers use semantic product versions and never request administrator elevation', () => {
@@ -235,7 +237,7 @@ test('install.sh passes sh -n when sh is available', () => {
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
-test('Korean installer validation failures expose stable code without raw English fallback', () => {
+test('Korean installer validation failures show the stable code and the cause', () => {
   const environment = {
     ...process.env,
     CONTEXA_LANG: 'ko',
@@ -247,7 +249,7 @@ test('Korean installer validation failures expose stable code without raw Englis
     const output = `${sh.stdout}\n${sh.stderr}`;
     assert.equal(sh.status, 1, output);
     assert.match(output, /INSTALLER_OPERATION_FAILED/);
-    assert.doesNotMatch(output, /must be an integer/);
+    assert.match(output, /must be an integer/);
     assert.equal(output.includes('\uFFFD'), false);
   }
 
@@ -258,7 +260,7 @@ test('Korean installer validation failures expose stable code without raw Englis
     const output = `${ps.stdout}\n${ps.stderr}`;
     assert.equal(ps.status, 1, output);
     assert.match(output, /INSTALLER_OPERATION_FAILED/);
-    assert.doesNotMatch(output, /must be an integer/);
+    assert.match(output, /must be an integer/);
     assert.equal(output.includes('\uFFFD'), false);
   }
 });

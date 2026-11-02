@@ -481,6 +481,16 @@ function Ensure-CommandPath {
     }
 }
 
+# What to do next. This session already finds contexa (Ensure-CommandPath updated it); other
+# terminals that were open before the installation do not.
+function Write-NextSteps {
+    Write-Host ''
+    Write-Host ('  ' + (Select-InstallerText 'Next - run this in your Spring Boot project folder:' '64uk7J2MIOuLqOqzhCAtIFNwcmluZyBCb290IO2UhOuhnOygne2KuCDtj7TrjZTsl5DshJwg7Iuk7ZaJ7ZWY7IS47JqUOg=='))
+    Write-Host '    contexa init'
+    Write-Host ('  ' + (Select-InstallerText '(No project yet? Run contexa init in an empty folder and it creates a sample application.)' 'KO2UhOuhnOygne2KuOqwgCDslYTsp4Eg7JeG7Jy866m0IOu5iCDtj7TrjZTsl5DshJwgY29udGV4YSBpbml07J2EIOyLpO2Wie2VmOuptCDsmIjsoJwg7JWx7J2EIOunjOuTpOyWtCDspI3ri4jri6QuKQ=='))
+    Write-Host ('  ' + (Select-InstallerText 'Terminals that were already open need to be reopened to find contexa.' '7J2066+4IOyXtOugpCDsnojrjZgg64uk66W4IO2EsOuvuOuEkOydgCDri6Tsi5wg7Je07Ja07JW8IGNvbnRleGEg66qF66C57J2EIOywvuyKteuLiOuLpC4='))
+}
+
 function Invoke-Rollback {
     param([string]$FinalPath, [string]$BackupPath)
     if (-not (Test-Path -LiteralPath $BackupPath)) { throw ('No previous Contexa binary exists at ' + $BackupPath) }
@@ -591,6 +601,7 @@ function Invoke-ContexaInstaller {
             Test-BinarySmoke $finalPath $expectedCliVersion
             Ensure-CommandPath $installDir $finalPath
             Write-Host ('  Contexa ' + $version + (Select-InstallerText ' is already installed; no file was replaced.' 'IOuyhOyghOydtCDsnbTrr7gg7ISk7LmY65CY7Ja0IOyeiOyWtCDtjIzsnbzsnYQg6rWQ7LK07ZWY7KeAIOyViuyVmOyKteuLiOuLpC4=')) -ForegroundColor Green
+            Write-NextSteps
             return
         }
     }
@@ -638,13 +649,8 @@ function Invoke-ContexaInstaller {
         Ensure-CommandPath $installDir $finalPath
         Remove-InstallerTransaction $markerPath
         Write-Host ('  Contexa ' + $version + (Select-InstallerText ' installed and verified.' 'IOyEpOy5mOyZgCDqsoDspp3snYQg7JmE66OM7ZaI7Iq164uI64ukLg==')) -ForegroundColor Green
-        Write-Host ('  ' + (Select-InstallerText 'Primary commands:' '7KO87JqUIOuqheuguTo='))
-        Write-Host '    contexa init'
-        Write-Host '    contexa reset'
-        Write-Host '    contexa init --simulate'
-        Write-Host '    contexa reset --simulate'
-        Write-Host ('  ' + (Select-InstallerText 'Immutable reinstall: set CONTEXA_VERSION=' '64+Z7J28IOuyhOyghCDsnqzshKTsuZg6IENPTlRFWEFfVkVSU0lPTj0=') + $version + (Select-InstallerText ' and run this installer again.' '7J2EIOyEpOygle2VmOqzoCDshKTsuZgg7ZSE66Gc6re4656o7J2EIOuLpOyLnCDsi6TtlontlZjshLjsmpQu'))
-        Write-Host ('  ' + (Select-InstallerText 'Rollback: run the downloaded install.ps1 file with -Action rollback.' '66Gk67CxOiBpbnN0YWxsLnBzMSDtjIzsnbzsnYQgLUFjdGlvbiByb2xsYmFjayDsmLXshZjsnLzroZwg7Iuk7ZaJ7ZWY7Iut7Iuc7JikLg=='))
+        Write-NextSteps
+        Write-Host ''
         Write-Host ('  ' + (Select-InstallerText 'Uninstall: irm https://install.ctxa.ai/uninstall.ps1 | iex (project reset is separate).' '7KCc6rGwOiBpcm0gaHR0cHM6Ly9pbnN0YWxsLmN0eGEuYWkvdW5pbnN0YWxsLnBzMSB8IGlleCAo7ZSE66Gc7KCd7Yq4IHJlc2V07J2AIOuzhOuPhCk='))
     } catch {
         if ($oldMoved -and -not (Test-Path -LiteralPath $finalPath) -and (Test-Path -LiteralPath $backupPath)) {
@@ -673,8 +679,8 @@ try {
         $failureSummary =
             'Contexa ' +
             (Select-InstallerText 'installer failed [' '7ISk7LmYIO2UhOuhnOq3uOueqCDsi6TtjKggWw==') +
-            $failureCode +
-            (Select-InstallerText ']: Check the error code, fix the cause, and run the same command again.' 'XTog7Jik66WYIOy9lOuTnOulvCDtmZXsnbjtlZjqs6Ag7JuQ7J247J2EIOyImOygle2VnCDrkqQg6rCZ7J2AIOuqheugueydhCDri6Tsi5wg7Iuk7ZaJ7ZWY7IS47JqULg==')
+            $failureCode + ']: ' + $_.Exception.Message +
+            (Select-InstallerText ' (Check the error code, fix the cause, and run the same command again.)' 'ICjsmKTrpZgg7L2U65Oc66W8IO2ZleyduO2VmOqzoCDsm5DsnbjsnYQg7IiY7KCV7ZWcIOuSpCDqsJnsnYAg66qF66C57J2EIOuLpOyLnCDsi6TtlontlZjshLjsmpQuKQ==')
     } else {
         $failureSummary = 'Contexa installer failed [' + $failureCode + ']: ' + $_.Exception.Message
     }
